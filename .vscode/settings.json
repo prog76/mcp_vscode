@@ -1,0 +1,65 @@
+{
+    "editor.detectIndentation": false,
+    "editor.formatOnSave": true,
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2,
+    "editor.renderWhitespace": "boundary",
+    "files.insertFinalNewline": true,
+    "files.autoSave": "onFocusChange",
+    "quickCommandButtons.buttons": [
+        {
+            "color": "green",
+            "name": "$(play-circle) Dev Setup",
+            "shortcut": "d",
+            "command": "make dev",
+            "terminalName": "Dev Setup"
+        },
+        {
+            "color": "orange",
+            "name": "$(tools) Build",
+            "shortcut": "b",
+            "command": "make build",
+            "terminalName": "Build Extension"
+        },
+        {
+            "color": "blue",
+            "name": "$(package) Install Ext",
+            "shortcut": "i",
+            "command": "make install-extension",
+            "terminalName": "Install Extension"
+        },
+        {
+            "color": "purple",
+            "name": "$(server) Start Server",
+            "shortcut": "s",
+            "command": "make start-server",
+            "terminalName": "Start MCP Server"
+        },
+        {
+            "color": "red",
+            "name": "$(debug-stop) Stop Server",
+            "shortcut": "x",
+            "command": "make stop-server",
+            "terminalName": "Stop MCP Server"
+        },
+        {
+            "color": "yellow",
+            "name": "$(sync) Restart Server",
+            "shortcut": "r",
+            "command": "make restart-server",
+            "terminalName": "Restart MCP Server"
+        },
+        {
+            "color": "gray",
+            "name": "$(trash) Clean",
+            "shortcut": "c",
+            "command": "make clean",
+            "terminalName": "Clean Build Artifacts"
+        }
+    ],
+    "quickCommandButtons.refreshButton": {
+        "icon": "$(refresh)",
+        "color": "gray",
+        "enabled": true
+    }
+}

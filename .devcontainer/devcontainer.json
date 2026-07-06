@@ -1,0 +1,19 @@
+{
+  "name": "vsc-mcp",
+  "dockerComposeFile": [
+    "docker-compose.yml",
+  ],
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
+    "source=/usr/bin/docker,target=/usr/bin/docker,type=bind",
+    "source=/usr/bin/docker-compose,target=/usr/bin/docker-compose,type=bind",
+    "source=/usr/libexec/docker/cli-plugins,target=/usr/libexec/docker/cli-plugins,type=bind"
+  ],
+  "service": "workspace",
+  "workspaceFolder": "/vsc-mcp",
+  "shutdownAction": "stopCompose",
+  "remoteUser": "vscode",
+  "containerEnv": {
+    "HOST_HOME": "${localEnv:HOME}"
+  }
+}

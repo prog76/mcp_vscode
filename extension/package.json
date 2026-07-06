@@ -1,0 +1,65 @@
+{
+  "name": "vscode-mcp-extension",
+  "displayName": "VS Code MCP Extension",
+  "description": "VS Code extension that exposes terminals via MCP protocol",
+  "version": "1.0.0",
+  "publisher": "picoclaw",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onExtensionInstalled"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "vscode-mcp.showStatus",
+        "title": "Show VS Code MCP Status"
+      },
+      {
+        "command": "vscode-mcp.register",
+        "title": "Register with MCP Server"
+      },
+      {
+        "command": "vscode-mcp.listTerminals",
+        "title": "List Managed Terminals"
+      }
+    ],
+    "configuration": {
+      "title": "VS Code MCP",
+      "properties": {
+        "vscode-mcp.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:9876",
+          "description": "URL of the central VS Code MCP server"
+        },
+        "vscode-mcp.heartbeatInterval": {
+          "type": "number",
+          "default": 30,
+          "description": "Heartbeat interval in seconds"
+        },
+        "vscode-mcp.localPort": {
+          "type": "number",
+          "default": 0,
+          "description": "Local port for extension server (0 = random)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.130",
+    "@types/vscode": "^1.74.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {}
+}
