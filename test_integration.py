@@ -27,14 +27,14 @@ async def test_full_workflow():
     async with httpx.AsyncClient() as client:
         # Test 1: Check server health
         print("\n1. Checking server health...")
-        response = await client.get(f"{base_url}/health")
+        response = await client.get(f"{base_url}/api/health")
         assert response.status_code == 200, "Server not healthy"
         health = response.json()
         print(f"   ✓ Server healthy, extensions: {health['extensions_count']}")
 
         # Test 2: Register mock extension
         print("\n2. Registering mock extension...")
-        response = await client.post(f"{base_url}/register", json={
+        response = await client.post(f"{base_url}/api/register", json={
             "workspace": workspace_name,
             "extension_url": mock_ext_url
         })
@@ -44,7 +44,7 @@ async def test_full_workflow():
 
         # Test 3: Verify workspace listed
         print("\n3. Verifying workspace registration...")
-        response = await client.get(f"{base_url}/workspaces")
+        response = await client.get(f"{base_url}/api/workspaces")
         assert response.status_code == 200
         workspaces = response.json()['workspaces']
         workspace_names = [w['name'] for w in workspaces]
@@ -125,7 +125,7 @@ async def test_full_workflow():
 
         # Test 9: Heartbeat
         print("\n9. Testing heartbeat...")
-        response = await client.post(f"{base_url}/heartbeat", json={
+        response = await client.post(f"{base_url}/api/heartbeat", json={
             "workspace": workspace_name
         })
         assert response.status_code == 200

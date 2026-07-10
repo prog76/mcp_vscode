@@ -2,7 +2,7 @@
   "name": "vscode-mcp-extension",
   "displayName": "VS Code MCP Extension",
   "description": "VS Code extension that exposes terminals via MCP protocol",
-  "version": "1.0.0",
+  "version": "1.0.5",
   "publisher": "picoclaw",
   "engines": {
     "vscode": "^1.74.0"
@@ -18,12 +18,20 @@
   "contributes": {
     "commands": [
       {
+        "command": "vscode-mcp.statusBarClick",
+        "title": "Show VS Code MCP Status / Connect"
+      },
+      {
         "command": "vscode-mcp.showStatus",
         "title": "Show VS Code MCP Status"
       },
       {
-        "command": "vscode-mcp.register",
-        "title": "Register with MCP Server"
+        "command": "vscode-mcp.connect",
+        "title": "Connect to MCP Server"
+      },
+      {
+        "command": "vscode-mcp.disconnect",
+        "title": "Disconnect from MCP Server"
       },
       {
         "command": "vscode-mcp.listTerminals",
@@ -47,6 +55,11 @@
           "type": "number",
           "default": 0,
           "description": "Local port for extension server (0 = random)"
+        },
+        "vscode-mcp.showStatus": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show connection status in the status bar"
         }
       }
     }

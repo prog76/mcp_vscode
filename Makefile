@@ -1,4 +1,4 @@
-.PHONY: help install build install-extension start-server stop-server restart-server dev clean
+.PHONY: help install build build-with-version install-extension start-server stop-server restart-server dev clean
 
 help: ## Show this help message
 	@echo "VS Code MCP Extension - Available targets:"
@@ -11,11 +11,16 @@ install: ## Install all dependencies (npm and Python)
 	@echo "Installing Python package..."
 	pip3 install --break-system-packages . 2>/dev/null || pip install .
 
-build: ## Compile TypeScript and create VSIX package
-	@echo "Building extension..."
-	cd extension && npm run compile
-	cd extension && npx vsce package --allow-missing-repository --no-yarn
+build: ## Build with auto-incremented version (patch)
+	@echo "Auto-incrementing version..."
+	@cd extension && npm version patch --no-git-tag-version
+	@extver=$$(cd extension && node -p 'require("./package.json").version'); \
+		sed -i "s/__version__ = \".*\"/__version__ = \"$$extver\"/" vscode_mcp/__init__.py; \
+		echo "Python version updated to $$extver"
+	@cd extension && npm run compile
+	@cd extension && npx vsce package --allow-missing-repository --no-yarn
 	@echo "VSIX package created: extension/*.vsix"
+	@echo "New version: $$(cd extension && node -p 'require("./package.json").version')"
 
 install-extension: build ## Create VSIX package (for devcontainer use)
 	@echo "VSIX package created: extension/*.vsix"
@@ -31,7 +36,7 @@ start-server: ## Start MCP server in background
 	@sleep 2
 	@echo "Server started (PID: $$(cat server.pid))"
 	@echo "Checking health..."
-	@curl -s http://localhost:9876/health || echo "Server not ready yet"
+	@curl -s http://localhost:9876/api/health || echo "Server not ready yet"
 
 stop-server: ## Stop MCP server
 	@echo "Stopping MCP server..."

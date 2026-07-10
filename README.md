@@ -62,7 +62,7 @@ npm run compile
 {
   "mcpServers": {
     "vscode": {
-      "url": "http://localhost:9876/mcp"
+      "url": "http://localhost:9876/sse"
     }
   }
 }
@@ -207,7 +207,7 @@ Agent connects through policy proxy:
 
 ### Central Server Endpoints
 
-#### `POST /register`
+#### `POST /api/register`
 Register a VS Code extension.
 
 **Request:**
@@ -223,11 +223,11 @@ Register a VS Code extension.
 {
   "status": "registered",
   "workspace": "my-project",
-  "endpoint": "/mcp"
+  "endpoint": "/"
 }
 ```
 
-#### `POST /heartbeat`
+#### `POST /api/heartbeat`
 Send heartbeat to keep registration alive.
 
 **Request:**
@@ -244,7 +244,7 @@ Send heartbeat to keep registration alive.
 }
 ```
 
-#### `GET /workspaces`
+#### `GET /api/workspaces`
 List all registered workspaces.
 
 **Response:**
@@ -261,7 +261,7 @@ List all registered workspaces.
 }
 ```
 
-#### `GET /health`
+#### `GET /api/health`
 Health check.
 
 **Response:**
@@ -351,12 +351,12 @@ Press F5 in VS Code to launch Extension Development Host.
 ## Troubleshooting
 
 **Extension not registering:**
-- Check central server is running: `curl http://localhost:9876/health`
+- Check central server is running: `curl http://localhost:9876/api/health`
 - Check extension logs: View → Output → VS Code MCP Extension
 - Check central server logs for registration attempts
 
 **Tool calls failing:**
-- Verify workspace name matches: `curl http://localhost:9876/workspaces`
+- Verify workspace name matches: `curl http://localhost:9876/api/workspaces`
 - Check extension is running: Look for status bar icon
 - Check local server is running: Extension logs should show port
 

@@ -25,6 +25,8 @@ from datetime import datetime, timedelta
 import httpx
 import uvicorn
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -50,7 +52,18 @@ extensions: Dict[str, Dict[str, Any]] = {}  # workspace_name -> {url, last_heart
 
 def get_extension(workspace: str) -> Optional[Dict[str, Any]]:
     """Get registered extension for workspace, or None if not found/expired."""
+    # Try exact match first
     ext = extensions.get(workspace)
+
+    # If not found, try to match by workspace name prefix (for dev containers)
+    if not ext:
+        for ws, ext_data in extensions.items():
+            # Check if workspace name starts with the given workspace
+            if ws.startswith(workspace) or workspace in ws:
+                ext = ext_data
+                log.debug("Matched workspace '%s' to registered '%s'", workspace, ws)
+                break
+
     if not ext:
         return None
 
@@ -101,21 +114,16 @@ async def call_extension(workspace: str, tool: str, arguments: Dict[str, Any]) -
 # MCP Server Tools
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP("vscode-mcp")
+from mcp.server.transport_security import TransportSecuritySettings
+
+# Disable DNS rebinding protection for browser extension compatibility
+transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+mcp = FastMCP("vscode-mcp", transport_security=transport_security, stateless_http=True)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 async def terminal_create(workspace: str, name: str, cwd: str = "") -> str:
-    """Create a new terminal in the specified VS Code workspace.
-
-    Args:
-        workspace: Workspace name (must match registered VS Code instance)
-        name: Terminal name (displayed in VS Code terminal tab)
-        cwd: Working directory (optional, defaults to workspace root)
-
-    Returns:
-        terminal_id: Unique ID for the created terminal
-    """
+    """Create a new terminal in the specified VS Code workspace."""
     log.info("Creating terminal in workspace '%s': %s", workspace, name)
     return await call_extension(workspace, 'terminal_create', {
         'name': name,
@@ -123,18 +131,9 @@ async def terminal_create(workspace: str, name: str, cwd: str = "") -> str:
     })
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 async def terminal_exec(workspace: str, terminal_id: str, command: str) -> str:
-    """Execute a command in a terminal.
-
-    Args:
-        workspace: Workspace name
-        terminal_id: Terminal ID (from terminal_create)
-        command: Command to execute
-
-    Returns:
-        Execution status message
-    """
+    """Execute a command in a terminal."""
     log.info("Executing in workspace '%s' terminal %s: %s", workspace, terminal_id, command)
     return await call_extension(workspace, 'terminal_exec', {
         'terminal_id': terminal_id,
@@ -142,18 +141,9 @@ async def terminal_exec(workspace: str, terminal_id: str, command: str) -> str:
     })
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 async def terminal_read(workspace: str, terminal_id: str, since_index: int = 0) -> str:
-    """Read terminal output since last read.
-
-    Args:
-        workspace: Workspace name
-        terminal_id: Terminal ID
-        since_index: Read output since this index (0 = all, use returned next_index for incremental reads)
-
-    Returns:
-        JSON with output text and next_index for subsequent calls
-    """
+    """Read terminal output since last read."""
     log.debug("Reading terminal output from workspace '%s' terminal %s since %d",
               workspace, terminal_id, since_index)
     return await call_extension(workspace, 'terminal_read', {
@@ -162,31 +152,16 @@ async def terminal_read(workspace: str, terminal_id: str, since_index: int = 0) 
     })
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 async def terminal_list(workspace: str) -> str:
-    """List all active terminals in a workspace.
-
-    Args:
-        workspace: Workspace name
-
-    Returns:
-        JSON array of terminal info objects
-    """
+    """List all active terminals in a workspace."""
     log.debug("Listing terminals in workspace '%s'", workspace)
     return await call_extension(workspace, 'terminal_list', {})
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 async def terminal_kill(workspace: str, terminal_id: str) -> str:
-    """Kill a terminal.
-
-    Args:
-        workspace: Workspace name
-        terminal_id: Terminal ID to kill
-
-    Returns:
-        Status message
-    """
+    """Kill a terminal."""
     log.info("Killing terminal %s in workspace '%s'", terminal_id, workspace)
     return await call_extension(workspace, 'terminal_kill', {
         'terminal_id': terminal_id
@@ -238,9 +213,19 @@ async def handle_heartbeat(request: Request):
         if not workspace:
             return JSONResponse({"error": "Missing workspace"}, status_code=400)
 
+        # Try exact match first, then try to match by workspace name prefix
+        matched_workspace = None
         if workspace in extensions:
-            extensions[workspace]['last_heartbeat'] = time.time()
-            log.debug("Heartbeat from workspace: %s", workspace)
+            matched_workspace = workspace
+        else:
+            for ws in extensions.keys():
+                if ws.startswith(workspace) or workspace in ws:
+                    matched_workspace = ws
+                    break
+
+        if matched_workspace:
+            extensions[matched_workspace]['last_heartbeat'] = time.time()
+            log.debug("Heartbeat from workspace: %s", matched_workspace)
             return JSONResponse({"status": "ok"})
         else:
             return JSONResponse(
@@ -280,6 +265,36 @@ async def handle_health(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# CORS Middleware
+# ---------------------------------------------------------------------------
+
+class CORSSupportMiddleware(BaseHTTPMiddleware):
+    """Custom middleware to add CORS headers to all responses."""
+
+    async def dispatch(self, request, call_next):
+        # Handle OPTIONS requests
+        if request.method == "OPTIONS":
+            return JSONResponse(
+                {"ok": True},
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "*",
+                    "Access-Control-Max-Age": "86400",
+                }
+            )
+
+        response = await call_next(request)
+
+        # Add CORS headers to response
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+
+        return response
+
+
+# ---------------------------------------------------------------------------
 # Background Tasks
 # ---------------------------------------------------------------------------
 
@@ -295,28 +310,29 @@ async def cleanup_task():
 # ---------------------------------------------------------------------------
 
 def create_app():
-    """Create the Starlette application."""
-    # Create MCP server
+    """Create the MCP Starlette application with API routes and CORS support."""
+    # streamable_http_app() returns a Starlette app with:
+    # - Route at /mcp (POST) for MCP requests
+    # - stateless HTTP (no session management)
     mcp_app = mcp.streamable_http_app()
 
-    # HTTP API routes
+    # Add API routes (both /api/* and /* for compatibility)
     api_routes = [
+        Route('/api/register', endpoint=handle_register, methods=['POST']),
         Route('/register', endpoint=handle_register, methods=['POST']),
+        Route('/api/heartbeat', endpoint=handle_heartbeat, methods=['POST']),
         Route('/heartbeat', endpoint=handle_heartbeat, methods=['POST']),
+        Route('/api/workspaces', endpoint=handle_list_workspaces, methods=['GET']),
         Route('/workspaces', endpoint=handle_list_workspaces, methods=['GET']),
+        Route('/api/health', endpoint=handle_health, methods=['GET']),
         Route('/health', endpoint=handle_health, methods=['GET']),
     ]
+    mcp_app.routes.extend(api_routes)
 
-    # Combine routes
-    all_routes = [
-        *api_routes,
-        Mount('/mcp', app=mcp_app),
-    ]
+    # Add CORS middleware for browser extension compatibility
+    mcp_app.add_middleware(CORSSupportMiddleware)
 
-    app = Starlette(routes=all_routes)
-
-    # Startup logic is handled in the lifespan context manager below
-    return app
+    return mcp_app
 
 
 def main():

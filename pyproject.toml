@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vscode-mcp"
-version = "1.0.0"
+version = "1.0.2"
 description = "VS Code MCP Extension - Exposes VS Code terminals as MCP tools for AI agents"
 readme = "README.md"
 license = "MIT"

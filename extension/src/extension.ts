@@ -1,10 +1,15 @@
 import * as vscode from 'vscode';
 import * as http from 'http';
 import * as https from 'https';
+import * as child_process from 'child_process';
 
 let localServer: http.Server | undefined;
 let heartbeatInterval: NodeJS.Timeout | undefined;
 let workspace: string;
+let connectionState: 'connecting' | 'connected' | 'disconnected' = 'disconnected';
+let statusBar: vscode.StatusBarItem;
+let serverUrl: string;
+let extensionUrl: string;
 
 export async function activate(context: vscode.ExtensionContext) {
   console.log('VS Code MCP Extension is activating');
@@ -16,54 +21,68 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Get configuration
   const config = vscode.workspace.getConfiguration('vscode-mcp');
-  const serverUrl = config.get<string>('serverUrl', 'http://localhost:9876');
+  serverUrl = config.get<string>('serverUrl', 'http://localhost:9876');
   const heartbeatIntervalSec = config.get<number>('heartbeatInterval', 30);
   const localPort = config.get<number>('localPort', 0);
 
   // Start local server
   const actualPort = await startLocalServer(context, localPort);
-  const extensionUrl = `http://localhost:${actualPort}`;
+  extensionUrl = `http://localhost:${actualPort}`;
 
   console.log(`Local server started on port ${actualPort}`);
   console.log(`Registering workspace: ${workspace}`);
 
+  // Create status bar item
+  statusBar = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Right,
+    100
+  );
+  updateStatusBar();
+  statusBar.show();
+
   // Register with central server
-  registerWithServer(serverUrl, workspace, extensionUrl).catch(err => {
-    console.error('Failed to register with central server:', err);
+  connectToServer().catch(err => {
+    console.error('Failed to connect to central server:', err);
   });
 
   // Start heartbeat
   heartbeatInterval = setInterval(() => {
-    sendHeartbeat(serverUrl, workspace).catch(err => {
+    sendHeartbeat().catch(err => {
       console.error('Heartbeat failed:', err);
     });
   }, heartbeatIntervalSec * 1000);
 
-  // Create status bar item
-  const statusBar = vscode.window.createStatusBarItem(
-    vscode.StatusBarAlignment.Right,
-    100
-  );
-  statusBar.text = '$(server) MCP';
-  statusBar.tooltip = `VS Code MCP: ${workspace}`;
-  statusBar.command = 'vscode-mcp.showStatus';
-  statusBar.show();
-
   // Register commands
   context.subscriptions.push(
-    vscode.commands.registerCommand('vscode-mcp.showStatus', async () => {
-      const info = await getStatus(serverUrl, workspace);
-      vscode.window.showInformationMessage(
-        `Workspace: ${workspace}\n` +
-        `Server: ${serverUrl}\n` +
-        `Local: ${extensionUrl}\n` +
-        `Status: ${info.status}`
-      );
+    vscode.commands.registerCommand('vscode-mcp.statusBarClick', async () => {
+      if (connectionState === 'disconnected') {
+        vscode.window.showInformationMessage(`Connecting to MCP server: ${serverUrl}...`);
+        try {
+          await connectToServer();
+          vscode.window.showInformationMessage(`Connected to MCP server: ${serverUrl}`);
+        } catch (error) {
+          vscode.window.showErrorMessage(`Failed to connect: ${error}`);
+        }
+      } else if (connectionState === 'connected') {
+        const info = await getStatus();
+        vscode.window.showInformationMessage(
+          `Workspace: ${workspace}\n` +
+          `Server: ${serverUrl}\n` +
+          `Local: ${extensionUrl}\n` +
+          `Status: ${connectionState}`
+        );
+      }
+      // When connecting, do nothing (already in progress)
     }),
 
-    vscode.commands.registerCommand('vscode-mcp.register', async () => {
-      await registerWithServer(serverUrl, workspace, extensionUrl);
-      vscode.window.showInformationMessage(`Registered workspace: ${workspace}`);
+    vscode.commands.registerCommand('vscode-mcp.connect', async () => {
+      await connectToServer();
+      vscode.window.showInformationMessage(`Connected to MCP server: ${serverUrl}`);
+    }),
+
+    vscode.commands.registerCommand('vscode-mcp.disconnect', async () => {
+      await disconnectFromServer();
+      vscode.window.showInformationMessage(`Disconnected from MCP server`);
     }),
 
     vscode.commands.registerCommand('vscode-mcp.listTerminals', async () => {
@@ -77,20 +96,118 @@ export async function activate(context: vscode.ExtensionContext) {
     statusBar
   );
 
+  // Set up status bar click handler
+  statusBar.command = 'vscode-mcp.statusBarClick';
+
   console.log(`VS Code MCP Extension activated for workspace: ${workspace}`);
 }
 
-export function deactivate() {
+export async function deactivate() {
   console.log('VS Code MCP Extension deactivating');
 
   if (heartbeatInterval) {
     clearInterval(heartbeatInterval);
   }
 
+  // Disconnect from server on deactivate
+  await disconnectFromServer();
+
   if (localServer) {
     localServer.close();
     localServer = undefined;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Status Bar Management
+// ---------------------------------------------------------------------------
+
+function updateStatusBar() {
+  if (!statusBar) return;
+
+  const config = vscode.workspace.getConfiguration('vscode-mcp');
+  const showStatus = config.get<boolean>('showStatus', true);
+
+  if (!showStatus) {
+    statusBar.hide();
+    return;
+  }
+
+  statusBar.show();
+
+  switch (connectionState) {
+    case 'connected':
+      statusBar.text = '$(plug) MCP';
+      statusBar.color = new vscode.ThemeColor('statusBar.foreground');
+      statusBar.tooltip = `VS Code MCP: Connected to ${serverUrl}\nWorkspace: ${workspace}\nClick to show status`;
+      break;
+    case 'connecting':
+      statusBar.text = '$(sync~spin) MCP';
+      statusBar.color = new vscode.ThemeColor('statusBar.foreground');
+      statusBar.tooltip = `VS Code MCP: Connecting to ${serverUrl}...\nWorkspace: ${workspace}`;
+      break;
+    case 'disconnected':
+      statusBar.text = '$(error) MCP';
+      statusBar.color = new vscode.ThemeColor('statusBar.errorForeground');
+      statusBar.tooltip = `VS Code MCP: Disconnected from ${serverUrl}\nWorkspace: ${workspace}\nClick to connect`;
+      break;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Connection Management
+// ---------------------------------------------------------------------------
+
+async function connectToServer() {
+  connectionState = 'connecting';
+  updateStatusBar();
+
+  try {
+    const response = await httpRequest(`${serverUrl}/api/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        workspace,
+        extension_url: extensionUrl
+      })
+    });
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw new Error(`Registration failed: ${response.statusCode}`);
+    }
+
+    const data = JSON.parse(response.body);
+    console.log('Registered with central server:', data);
+    connectionState = 'connected';
+    updateStatusBar();
+  } catch (error) {
+    console.error('Failed to connect to central server:', error);
+    connectionState = 'disconnected';
+    updateStatusBar();
+    throw error;
+  }
+}
+
+async function disconnectFromServer() {
+  try {
+    if (connectionState === 'connected') {
+      await httpRequest(`${serverUrl}/api/unregister`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          workspace
+        })
+      });
+    }
+  } catch (error) {
+    console.error('Error during disconnect:', error);
+  }
+  connectionState = 'disconnected';
+  updateStatusBar();
 }
 
 // ---------------------------------------------------------------------------
@@ -102,9 +219,24 @@ interface TerminalInfo {
   name: string;
   terminal: vscode.Terminal;
   outputBuffer: string[];
+  cwd: string;
 }
 
 const terminals = new Map<string, TerminalInfo>();
+
+// Execute command and capture output using child_process
+function executeCommandWithOutput(command: string, cwd?: string): Promise<string> {
+  return new Promise((resolve) => {
+    const workspacePath = cwd || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
+    child_process.exec(command, { cwd: workspacePath }, (error, stdout, stderr) => {
+      if (error) {
+        resolve(`Error: ${error.message}`);
+      } else {
+        resolve(stdout || stderr || '');
+      }
+    });
+  });
+}
 
 function startLocalServer(context: vscode.ExtensionContext, port: number): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -121,9 +253,10 @@ function startLocalServer(context: vscode.ExtensionContext, port: number): Promi
 
             switch (tool) {
               case 'terminal_create': {
+                const cwd = args.cwd || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
                 const terminal = vscode.window.createTerminal({
                   name: args.name || 'MCP Terminal',
-                  cwd: args.cwd || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+                  cwd
                 });
 
                 const id = generateId();
@@ -131,7 +264,8 @@ function startLocalServer(context: vscode.ExtensionContext, port: number): Promi
                   id,
                   name: args.name || 'MCP Terminal',
                   terminal,
-                  outputBuffer: []
+                  outputBuffer: [],
+                  cwd
                 });
 
                 result = id;
@@ -143,8 +277,9 @@ function startLocalServer(context: vscode.ExtensionContext, port: number): Promi
                 if (!term) {
                   result = 'Error: Terminal not found';
                 } else {
-                  term.terminal.sendText(args.command);
-                  result = 'Executed';
+                  // Execute command and capture output immediately
+                  const output = await executeCommandWithOutput(args.command, term.cwd);
+                  result = output;
                 }
                 break;
               }
@@ -221,34 +356,11 @@ function startLocalServer(context: vscode.ExtensionContext, port: number): Promi
 // Central Server Communication
 // ---------------------------------------------------------------------------
 
-async function registerWithServer(serverUrl: string, workspace: string, extensionUrl: string) {
+async function sendHeartbeat() {
+  if (connectionState !== 'connected') return;
+
   try {
-    const response = await httpRequest(`${serverUrl}/register`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        workspace,
-        extension_url: extensionUrl
-      })
-    });
-
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw new Error(`Registration failed: ${response.statusCode}`);
-    }
-
-    const data = JSON.parse(response.body);
-    console.log('Registered with central server:', data);
-  } catch (error) {
-    console.error('Failed to register with central server:', error);
-    throw error;
-  }
-}
-
-async function sendHeartbeat(serverUrl: string, workspace: string) {
-  try {
-    const response = await httpRequest(`${serverUrl}/heartbeat`, {
+    const response = await httpRequest(`${serverUrl}/api/heartbeat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -260,15 +372,19 @@ async function sendHeartbeat(serverUrl: string, workspace: string) {
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       console.error('Heartbeat failed:', response.statusCode);
+      connectionState = 'disconnected';
+      updateStatusBar();
     }
   } catch (error) {
     console.error('Heartbeat error:', error);
+    connectionState = 'disconnected';
+    updateStatusBar();
   }
 }
 
-async function getStatus(serverUrl: string, workspace: string): Promise<any> {
+async function getStatus(): Promise<any> {
   try {
-    const response = await httpRequest(`${serverUrl}/health`, {});
+    const response = await httpRequest(`${serverUrl}/api/health`, {});
     if (response.statusCode === 200) {
       return JSON.parse(response.body);
     }

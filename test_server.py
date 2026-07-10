@@ -23,7 +23,7 @@ async def test_server():
         # Test 1: Health check
         print("\n1. Testing health endpoint...")
         try:
-            response = await client.get(f"{base_url}/health")
+            response = await client.get(f"{base_url}/api/health")
             print(f"   Status: {response.status_code}")
             print(f"   Response: {json.dumps(response.json(), indent=2)}")
         except Exception as e:
@@ -34,7 +34,7 @@ async def test_server():
         # Test 2: Register mock extension
         print("\n2. Testing extension registration...")
         try:
-            response = await client.post(f"{base_url}/register", json={
+            response = await client.post(f"{base_url}/api/register", json={
                 "workspace": "test-project",
                 "extension_url": "http://localhost:9999"
             })
@@ -47,7 +47,7 @@ async def test_server():
         # Test 3: List workspaces
         print("\n3. Testing workspace list...")
         try:
-            response = await client.get(f"{base_url}/workspaces")
+            response = await client.get(f"{base_url}/api/workspaces")
             print(f"   Status: {response.status_code}")
             print(f"   Response: {json.dumps(response.json(), indent=2)}")
         except Exception as e:
@@ -57,7 +57,7 @@ async def test_server():
         # Test 4: Send heartbeat
         print("\n4. Testing heartbeat...")
         try:
-            response = await client.post(f"{base_url}/heartbeat", json={
+            response = await client.post(f"{base_url}/api/heartbeat", json={
                 "workspace": "test-project"
             })
             print(f"   Status: {response.status_code}")
@@ -89,7 +89,7 @@ async def test_server():
         # Test 6: Register second workspace
         print("\n6. Testing second workspace registration...")
         try:
-            response = await client.post(f"{base_url}/register", json={
+            response = await client.post(f"{base_url}/api/register", json={
                 "workspace": "another-project",
                 "extension_url": "http://localhost:9998"
             })
@@ -101,7 +101,7 @@ async def test_server():
         # Test 7: List workspaces again
         print("\n7. Testing workspace list (should have 2)...")
         try:
-            response = await client.get(f"{base_url}/workspaces")
+            response = await client.get(f"{base_url}/api/workspaces")
             print(f"   Status: {response.status_code}")
             data = response.json()
             print(f"   Workspaces: {len(data['workspaces'])}")

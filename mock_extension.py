@@ -137,7 +137,7 @@ async def send_heartbeat():
         try:
             await asyncio.sleep(30)  # Every 30 seconds
             async with httpx.AsyncClient() as client:
-                response = await client.post(f"{SERVER_URL}/heartbeat", json={
+                response = await client.post(f"{SERVER_URL}/api/heartbeat", json={
                     'workspace': WORKSPACE
                 })
                 if response.status_code == 200:
@@ -155,7 +155,7 @@ async def register_with_server():
     extension_url = f"http://localhost:{PORT}"
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(f"{SERVER_URL}/register", json={
+            response = await client.post(f"{SERVER_URL}/api/register", json={
                 'workspace': WORKSPACE,
                 'extension_url': extension_url
             })
