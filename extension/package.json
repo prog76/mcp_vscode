@@ -2,7 +2,7 @@
   "name": "vscode-mcp-extension",
   "displayName": "VS Code MCP Extension",
   "description": "VS Code extension that exposes terminals via MCP protocol",
-  "version": "1.0.5",
+  "version": "1.0.10",
   "publisher": "picoclaw",
   "engines": {
     "vscode": "^1.74.0"

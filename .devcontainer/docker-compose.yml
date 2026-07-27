@@ -15,18 +15,10 @@ services:
       target: /home/vscode/.ssh
       read_only: true
     - type: bind
-      source: ${HOME}/.kube
-      target: /home/vscode/.kube
-      read_only: true
-    - type: bind
       source: ${HOME}/.gitconfig
       target: /home/vscode/.gitconfig
       consistency: cached
-    - type: bind
-      source: ${HOME}/.cline
-      target: /home/vscode/.cline
-      read_only: false
     ports:
-      - "9876:9876"
+    - "9876:9876"
     command: ["sleep", "infinity"]
 
