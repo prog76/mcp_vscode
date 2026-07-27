@@ -62,7 +62,7 @@ npm run compile
 {
   "mcpServers": {
     "vscode": {
-      "url": "http://localhost:9876/sse"
+      "url": "http://localhost:9876/mcp"
     }
   }
 }
