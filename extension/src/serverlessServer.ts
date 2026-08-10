@@ -428,6 +428,7 @@ export class ServerlessServer {
             this.ws.close();
             this.ws = null;
         }
+        let hubLostAlreadyCalled = false;
         await new Promise<void>((resolve, reject) => {
             const ws = new WebSocket(wsUrl);
             const onOpen = () => {
@@ -437,7 +438,7 @@ export class ServerlessServer {
                 resolve();
             };
             const onClose = () => {
-                log(`[satellite] WebSocket closed`);
+                log(`[satellite] WebSocket closed — scheduling reconnect`);
                 this.ws = null;
                 if (!this.intentionallyStopped && this.wsUrl) {
                     log(`[satellite] scheduling reconnect in 2000ms`);
@@ -445,7 +446,10 @@ export class ServerlessServer {
                         this.connectAsSatellite(this.wsUrl!).catch(() => { });
                     }, 2000);
                 }
-                this.hubLostCallback?.();
+                if (!hubLostAlreadyCalled) {
+                    hubLostAlreadyCalled = true;
+                    this.hubLostCallback?.();
+                }
             };
             ws.on('open', onOpen);
             ws.on('message', (data) => this.handleMessage(data));
@@ -471,7 +475,6 @@ export class ServerlessServer {
         } catch {
             return;
         }
-        log(`[satellite] handleMessage: type="${msg?.type ?? 'unknown'}"`);
         switch (msg.type) {
             case 'execute':
                 log(`[satellite] execute received — tool="${msg.tool}" requestId=${msg.requestId}`);
@@ -537,10 +540,12 @@ export class ServerlessServer {
 
         switch (name) {
             case 'terminal_list_sessions': {
+                log(`[agent] terminal_list_sessions: session="${this.sessionId}"`);
                 return text(`[hub] session="${this.sessionId}"`);
             }
 
             case 'terminal_list': {
+                log(`[agent] terminal_list: session="${this.sessionId}"`);
                 const terminals = this.terminalManager.listTerminals();
                 if (terminals.length === 0) return text('No terminals open.');
                 const lines = terminals.map(
@@ -551,6 +556,7 @@ export class ServerlessServer {
             }
 
             case 'terminal_run': {
+                log(`[agent] terminal_run: command="${args.command}" session="${this.sessionId}"`);
                 const command = args.command as string;
                 const terminalName = args.terminal_name as string | undefined;
                 const wait = (args.wait as boolean | undefined) ?? true;
@@ -579,6 +585,7 @@ export class ServerlessServer {
             }
 
             case 'terminal_create': {
+                log(`[agent] terminal_create: name="${args.name}" session="${this.sessionId}"`);
                 const name = args.name as string;
                 const cwd = args.cwd as string | undefined;
                 const engine = args.engine as 'auto' | 'shell' | 'pty' | undefined;
