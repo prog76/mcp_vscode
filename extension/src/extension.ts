@@ -494,19 +494,82 @@ async function handleExecuteRequest(data: any) {
     switch (tool) {
       case 'terminal_create': {
         const cwd = args.cwd || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
+        const name = args.name || 'MCP Terminal';
+
+        // Capture terminal output by using a custom Pseudoterminal (PTY).
+        // VS Code's Terminal API does NOT expose a way to read the output of
+        // a regular shell terminal, so we create the terminal with our own
+        // Pseudoterminal instead. When terminal_exec calls sendText(), the
+        // text is routed to handleInput(), where we execute the command via
+        // child_process, capturing both the command echo and its output into
+        // the buffer and writing them to the terminal UI.
+        const writeEmitter = new vscode.EventEmitter<string>();
+        const closeEmitter = new vscode.EventEmitter<void>();
+        let inputBuffer = '';
+
         const terminal = vscode.window.createTerminal({
-          name: args.name || 'MCP Terminal',
-          cwd
+          name,
+          pty: {
+            onDidWrite: writeEmitter.event,
+            onDidClose: closeEmitter.event,
+            open: () => {
+              writeEmitter.fire(`\x1b[1;32mMCP Terminal (${cwd})\x1b[0m\r\n`);
+            },
+            close: () => {
+              closeEmitter.fire();
+            },
+            handleInput: (data: string) => {
+              // sendText sends the command followed by \r. Buffer input until
+              // we see \r so multi-chunk commands are assembled correctly.
+              inputBuffer += data;
+              const idx = inputBuffer.indexOf('\r');
+              if (idx >= 0) {
+                const full = inputBuffer.slice(0, idx);
+                inputBuffer = inputBuffer.slice(idx + 1);
+                const command = full.replace(/[\x00-\x1f\x7f]/g, '').trim();
+                if (command) {
+                  runCommand(command);
+                }
+              }
+            }
+          }
         });
 
         const id = generateId();
-        terminals.set(id, {
+        const termInfo: TerminalInfo = {
           id,
-          name: args.name || 'MCP Terminal',
+          name,
           terminal,
           outputBuffer: [],
           cwd
-        });
+        };
+        terminals.set(id, termInfo);
+
+        // Execute a command, capturing output for terminal_read.
+        const runCommand = (command: string) => {
+          const echo = `$ ${command}\r\n`;
+          termInfo.outputBuffer.push(echo);
+          writeEmitter.fire(echo);
+
+          const { exec } = require('child_process');
+          exec(command, { cwd }, (error: any, stdout: string, stderr: string) => {
+            const out = stdout + stderr;
+            if (out) {
+              termInfo.outputBuffer.push(out);
+              writeEmitter.fire(out.endsWith('\n') ? out : out + '\r\n');
+            }
+            if (error && !out) {
+              const errMsg = `Error: ${error.message}\r\n`;
+              termInfo.outputBuffer.push(errMsg);
+              writeEmitter.fire(errMsg);
+            }
+
+            // Cap the buffer to avoid unbounded memory growth (last 1000 chunks).
+            if (termInfo.outputBuffer.length > 1000) {
+              termInfo.outputBuffer.splice(0, termInfo.outputBuffer.length - 1000);
+            }
+          });
+        };
 
         // Show the terminal
         terminal.show();
@@ -520,7 +583,9 @@ async function handleExecuteRequest(data: any) {
         if (!term) {
           result = 'Error: Terminal not found';
         } else {
-          // Send text to the terminal
+          // Send text to the terminal. For PTY-backed terminals this routes
+          // to handleInput(), where the command is executed and its output
+          // captured into the buffer for terminal_read.
           term.terminal.sendText(args.command);
           result = 'Executed';
         }
@@ -546,7 +611,7 @@ async function handleExecuteRequest(data: any) {
         result = Array.from(terminals.values()).map(t => ({
           id: t.id,
           name: t.name,
-          cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+          cwd: t.cwd
         }));
         break;
       }
