@@ -2,8 +2,9 @@
   "name": "vscode-mcp-extension",
   "displayName": "VS Code MCP Extension",
   "description": "VS Code extension that exposes terminals via MCP protocol",
-  "version": "1.0.11",
+  "version": "1.0.50",
   "publisher": "picoclaw",
+  "icon": "icon.png",
   "engines": {
     "vscode": "^1.74.0"
   },
@@ -38,28 +39,84 @@
         "title": "List Managed Terminals"
       }
     ],
+    "menus": {
+      "editor/title/context": [
+        {
+          "command": "vscode-mcp.statusBarClick",
+          "group": "mcp@1",
+          "when": "true"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "vscode-mcp.statusBarClick",
+          "when": "true"
+        },
+        {
+          "command": "vscode-mcp.showStatus",
+          "when": "true"
+        },
+        {
+          "command": "vscode-mcp.connect",
+          "when": "true"
+        },
+        {
+          "command": "vscode-mcp.disconnect",
+          "when": "true"
+        },
+        {
+          "command": "vscode-mcp.listTerminals",
+          "when": "true"
+        }
+      ]
+    },
     "configuration": {
       "title": "VS Code MCP",
       "properties": {
-        "vscode-mcp.serverUrl": {
+        "vscode-mcp.host": {
           "type": "string",
-          "default": "http://localhost:9876",
-          "description": "URL of the central VS Code MCP server"
+          "default": "127.0.0.1",
+          "description": "Host address for the hub server"
         },
-        "vscode-mcp.heartbeatInterval": {
+        "vscode-mcp.port": {
           "type": "number",
-          "default": 30,
-          "description": "Heartbeat interval in seconds"
-        },
-        "vscode-mcp.localPort": {
-          "type": "number",
-          "default": 0,
-          "description": "Local port for extension server (0 = random)"
+          "default": 27681,
+          "description": "Port for the hub server (when this instance acts as hub)"
         },
         "vscode-mcp.showStatus": {
           "type": "boolean",
           "default": true,
           "description": "Show connection status in the status bar"
+        },
+        "vscode-mcp.mode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "client-only"
+          ],
+          "default": "auto",
+          "description": "auto: probe server, use client mode if reachable else serverless. client-only: always require the central server."
+        },
+        "vscode-mcp.terminalEngine": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "force-fallback"
+          ],
+          "default": "auto",
+          "description": "auto: use shell integration if available, else node-pty fallback. force-fallback: always use node-pty."
+        },
+        "vscode-mcp.outputBufferLines": {
+          "type": "number",
+          "default": 2000,
+          "description": "Max lines of terminal output to buffer per terminal"
+        },
+        "vscode-mcp.satelliteTimeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 10000,
+          "maximum": 600000,
+          "description": "Timeout in milliseconds for waiting on a satellite (remote VS Code window) to respond to a tool call. Default 120000 (2 min)."
         }
       }
     }
@@ -72,7 +129,11 @@
   "devDependencies": {
     "@types/node": "^18.19.130",
     "@types/vscode": "^1.74.0",
+    "@types/ws": "^8.18.1",
     "typescript": "^5.0.0"
   },
-  "dependencies": {}
+  "dependencies": {
+    "node-pty": "^1.1.0",
+    "ws": "^8.21.3"
+  }
 }
