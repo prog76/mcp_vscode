@@ -1,18 +1,49 @@
-import * as vscode from 'vscode';
-import WebSocket from 'ws';
-import { TerminalManager, CommandResult } from './terminalManager';
-import { PtyTerminalManager } from './ptyTerminalManager';
-import { log } from './logger';
-
-export interface ToolResult {
-    content: Array<{ type: string; text: string }>;
-}
-
-export const TOOLS = [
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ServerlessServer = exports.TOOLS = void 0;
+const vscode = __importStar(require("vscode"));
+const ws_1 = __importDefault(require("ws"));
+const logger_1 = require("./logger");
+exports.TOOLS = [
     {
         name: 'terminal_create',
-        description:
-            'Create a new terminal explicitly. Use this when you need a fresh terminal with specific settings.\n' +
+        description: 'Create a new terminal explicitly. Use this when you need a fresh terminal with specific settings.\n' +
             'engine=shell uses VS Code shell integration (default). engine=pty uses node-pty fallback.\n' +
             'Returns the created terminal name and engine used (shell-integration or pty-fallback).',
         inputSchema: {
@@ -29,16 +60,14 @@ export const TOOLS = [
     },
     {
         name: 'terminal_list_sessions',
-        description:
-            'Lists all connected VS Code windows with their session IDs (= workspace folder name). ' +
+        description: 'Lists all connected VS Code windows with their session IDs (= workspace folder name). ' +
             'Identify your session by matching the workspace folder name visible in your current context, ' +
             'then remember that session_id and pass it to all subsequent terminal tool calls.',
         inputSchema: { type: 'object', properties: {} },
     },
     {
         name: 'terminal_list',
-        description:
-            'List open VS Code terminals. With session_id lists terminals in that session only.\n' +
+        description: 'List open VS Code terminals. With session_id lists terminals in that session only.\n' +
             'Each terminal shows its engine: [shell-integration] or [no shell-integration].',
         inputSchema: {
             type: 'object',
@@ -49,8 +78,7 @@ export const TOOLS = [
     },
     {
         name: 'terminal_run',
-        description:
-            'Execute a shell command in a VS Code terminal and capture output.\n' +
+        description: 'Execute a shell command in a VS Code terminal and capture output.\n' +
             'Blocks until the command finishes or timeout_ms elapses (default 300000 = 5 min). On timeout, ' +
             'the command keeps running and the response ends with \'[STILL RUNNING — ...]\' — call terminal_wait to resume.\n' +
             'For commands expected to exceed ~30s, prefer wait=false + progressive terminal_wait calls.\n' +
@@ -70,8 +98,7 @@ export const TOOLS = [
     },
     {
         name: 'terminal_send_text',
-        description:
-            'Send text/input to a terminal WITHOUT capturing output. Works on busy terminals — this is ' +
+        description: 'Send text/input to a terminal WITHOUT capturing output. Works on busy terminals — this is ' +
             'how you answer prompts in a running command or abort it (send \'\\x03\' for Ctrl+C, ' +
             '\'\\x04\' for Ctrl+D). Use terminal_wait afterward to retrieve the result.',
         inputSchema: {
@@ -87,8 +114,7 @@ export const TOOLS = [
     },
     {
         name: 'terminal_read_output',
-        description:
-            'Read raw buffered output from a terminal (no exit code, includes user-typed command output too). ' +
+        description: 'Read raw buffered output from a terminal (no exit code, includes user-typed command output too). ' +
             'For commands started via terminal_run(wait=false), prefer terminal_wait to retrieve output + exit code.',
         inputSchema: {
             type: 'object',
@@ -112,8 +138,7 @@ export const TOOLS = [
     },
     {
         name: 'terminal_wait',
-        description:
-            'Wait for the current (or most recent) execution in a terminal to finish, and return its ' +
+        description: 'Wait for the current (or most recent) execution in a terminal to finish, and return its ' +
             'output and exit code. Blocks up to timeout_ms (default 300000). On timeout, returns output ' +
             'accumulated during this wait with \'[STILL RUNNING — ...]\' — call again to continue waiting, ' +
             'or send \'\\x03\' via terminal_send_text to abort.',
@@ -129,8 +154,7 @@ export const TOOLS = [
     },
     {
         name: 'get_diagnostics',
-        description:
-            'Get VS Code diagnostics (errors, warnings, hints) from all open files or a specific file.',
+        description: 'Get VS Code diagnostics (errors, warnings, hints) from all open files or a specific file.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -142,8 +166,7 @@ export const TOOLS = [
     },
     {
         name: 'get_document_symbols',
-        description:
-            'Get the symbol outline of a file (functions, classes, methods, variables, exports) without reading the entire file.',
+        description: 'Get the symbol outline of a file (functions, classes, methods, variables, exports) without reading the entire file.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -155,8 +178,7 @@ export const TOOLS = [
     },
     {
         name: 'get_references',
-        description:
-            'Find all references (usages) of a symbol across the entire workspace.',
+        description: 'Find all references (usages) of a symbol across the entire workspace.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -170,8 +192,7 @@ export const TOOLS = [
     },
     {
         name: 'rename_symbol',
-        description:
-            'Rename a symbol across the entire workspace using VS Code LSP.',
+        description: 'Rename a symbol across the entire workspace using VS Code LSP.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -186,8 +207,7 @@ export const TOOLS = [
     },
     {
         name: 'run_command',
-        description:
-            'Execute any VS Code command by ID. Universal escape hatch — anything VS Code can do, the agent can trigger.',
+        description: 'Execute any VS Code command by ID. Universal escape hatch — anything VS Code can do, the agent can trigger.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -200,8 +220,7 @@ export const TOOLS = [
     },
     {
         name: 'open_file',
-        description:
-            'Open a file in the VS Code editor and optionally jump to a line or highlight a range.',
+        description: 'Open a file in the VS Code editor and optionally jump to a line or highlight a range.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -215,8 +234,7 @@ export const TOOLS = [
     },
     {
         name: 'format_document',
-        description:
-            'Format a file using the configured formatter (Prettier, ESLint, etc.) and save it.',
+        description: 'Format a file using the configured formatter (Prettier, ESLint, etc.) and save it.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -228,8 +246,7 @@ export const TOOLS = [
     },
     {
         name: 'organize_imports',
-        description:
-            'Remove unused imports and sort remaining imports in a file, then save.',
+        description: 'Remove unused imports and sort remaining imports in a file, then save.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -241,8 +258,7 @@ export const TOOLS = [
     },
     {
         name: 'fix_all',
-        description:
-            'Apply all auto-fixable diagnostics in a file (ESLint auto-fixes, missing semicolons, etc.) and save it.',
+        description: 'Apply all auto-fixable diagnostics in a file (ESLint auto-fixes, missing semicolons, etc.) and save it.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -264,8 +280,7 @@ export const TOOLS = [
     },
     {
         name: 'find_in_files',
-        description:
-            'Open the VS Code workspace search panel with a query.',
+        description: 'Open the VS Code workspace search panel with a query.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -281,8 +296,7 @@ export const TOOLS = [
     },
     {
         name: 'get_hover_info',
-        description:
-            'Get type information, documentation, and signatures for a symbol at a specific position.',
+        description: 'Get type information, documentation, and signatures for a symbol at a specific position.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -296,8 +310,7 @@ export const TOOLS = [
     },
     {
         name: 'debug_breakpoints',
-        description:
-            'Add, remove, list, or clear breakpoints. Works without an active debug session.',
+        description: 'Add, remove, list, or clear breakpoints. Works without an active debug session.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -314,8 +327,7 @@ export const TOOLS = [
     },
     {
         name: 'debug_start',
-        description:
-            'Start a debug session. Provide either a launch.json config name or an inline config object.',
+        description: 'Start a debug session. Provide either a launch.json config name or an inline config object.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -327,8 +339,7 @@ export const TOOLS = [
     },
     {
         name: 'debug_stop',
-        description:
-            'Stop a debug session. By default stops the active session; set all=true to stop every session.',
+        description: 'Stop a debug session. By default stops the active session; set all=true to stop every session.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -340,8 +351,7 @@ export const TOOLS = [
     },
     {
         name: 'debug_state',
-        description:
-            'Get a full snapshot of the current debug state: threads, call stacks, scopes, and variables — all in one call.',
+        description: 'Get a full snapshot of the current debug state: threads, call stacks, scopes, and variables — all in one call.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -353,8 +363,7 @@ export const TOOLS = [
     },
     {
         name: 'debug_control',
-        description:
-            'Control execution of a debug session: continue, pause, step over/into/out, restart, or evaluate expressions.',
+        description: 'Control execution of a debug session: continue, pause, step over/into/out, restart, or evaluate expressions.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -370,8 +379,7 @@ export const TOOLS = [
     },
     {
         name: 'debug_console_output',
-        description:
-            'Read debug console output (console.log, stderr, debugger messages) from the current or most recent debug session.',
+        description: 'Read debug console output (console.log, stderr, debugger messages) from the current or most recent debug session.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -382,68 +390,52 @@ export const TOOLS = [
         },
     },
 ];
-
-export class ServerlessServer {
-    private terminalManager: TerminalManager;
-    private ptyManager: PtyTerminalManager;
-    private sessionId: string;
-    private terminalEngine: 'auto' | 'force-fallback';
-    private debugOutputBuffer: string[] = [];
-    private maxDebugOutputLines: number;
-    private ws: WebSocket | null = null;
-    private wsUrl: string | null = null;
-    private reconnectTimer: NodeJS.Timeout | null = null;
-    private hubLostCallback: (() => void) | null = null;
-    private intentionallyStopped = false;
-    readonly port = 0;
-
-    constructor(
-        terminalManager: TerminalManager,
-        ptyManager: PtyTerminalManager,
-        sessionId: string,
-        terminalEngine: 'auto' | 'force-fallback' = 'auto',
-        maxDebugOutputLines = 2000
-    ) {
+class ServerlessServer {
+    constructor(terminalManager, ptyManager, sessionId, terminalEngine = 'auto', maxDebugOutputLines = 2000) {
+        this.debugOutputBuffer = [];
+        this.ws = null;
+        this.wsUrl = null;
+        this.reconnectTimer = null;
+        this.hubLostCallback = null;
+        this.intentionallyStopped = false;
+        this.port = 0;
         this.terminalManager = terminalManager;
         this.ptyManager = ptyManager;
         this.sessionId = sessionId;
         this.terminalEngine = terminalEngine;
         this.maxDebugOutputLines = maxDebugOutputLines;
     }
-
-    get isRunning(): boolean {
+    get isRunning() {
         return true;
     }
-
     /** Register a callback invoked when the hub connection is lost. */
-    onHubLost(callback: () => void): void {
+    onHubLost(callback) {
         this.hubLostCallback = callback;
     }
-
     /** Connect to the hub as a satellite via WebSocket. */
-    async connectAsSatellite(wsUrl: string): Promise<void> {
-        log(`[satellite] connectAsSatellite(${wsUrl}) — session="${this.sessionId}"`);
+    async connectAsSatellite(wsUrl) {
+        (0, logger_1.log)(`[satellite] connectAsSatellite(${wsUrl}) — session="${this.sessionId}"`);
         this.wsUrl = wsUrl;
         if (this.ws) {
             this.ws.close();
             this.ws = null;
         }
         let hubLostAlreadyCalled = false;
-        await new Promise<void>((resolve, reject) => {
-            const ws = new WebSocket(wsUrl);
+        await new Promise((resolve, reject) => {
+            const ws = new ws_1.default(wsUrl);
             const onOpen = () => {
                 this.ws = ws;
-                log(`[satellite] WebSocket open, sending register for session="${this.sessionId}"`);
+                (0, logger_1.log)(`[satellite] WebSocket open, sending register for session="${this.sessionId}"`);
                 ws.send(JSON.stringify({ type: 'register', sessionId: this.sessionId }));
                 resolve();
             };
             const onClose = () => {
-                log(`[satellite] WebSocket closed — scheduling reconnect`);
+                (0, logger_1.log)(`[satellite] WebSocket closed — scheduling reconnect`);
                 this.ws = null;
                 if (!this.intentionallyStopped && this.wsUrl) {
-                    log(`[satellite] scheduling reconnect in 2000ms`);
+                    (0, logger_1.log)(`[satellite] scheduling reconnect in 2000ms`);
                     this.reconnectTimer = setTimeout(() => {
-                        this.connectAsSatellite(this.wsUrl!).catch(() => { });
+                        this.connectAsSatellite(this.wsUrl).catch(() => { });
                     }, 2000);
                 }
                 if (!hubLostAlreadyCalled) {
@@ -455,7 +447,7 @@ export class ServerlessServer {
             ws.on('message', (data) => this.handleMessage(data));
             ws.on('close', onClose);
             ws.on('error', (err) => {
-                log(`[satellite] WebSocket error: ${err}`);
+                (0, logger_1.log)(`[satellite] WebSocket error: ${err}`);
                 if (!this.ws) {
                     cleanup();
                     reject(err);
@@ -467,34 +459,33 @@ export class ServerlessServer {
             }
         });
     }
-
-    private handleMessage(data: WebSocket.RawData): void {
-        let msg: any;
+    handleMessage(data) {
+        let msg;
         try {
             msg = JSON.parse(data.toString());
-        } catch {
+        }
+        catch {
             return;
         }
         switch (msg.type) {
             case 'execute':
-                log(`[satellite] execute received — tool="${msg.tool}" requestId=${msg.requestId}`);
+                (0, logger_1.log)(`[satellite] execute received — tool="${msg.tool}" requestId=${msg.requestId}`);
                 this.callTool(msg.tool, msg.params || {})
                     .then((result) => {
-                        log(`[agent] callTool resolved — tool="${msg.tool}" requestId=${msg.requestId}, sending result`);
-                        this.ws?.send(JSON.stringify({ type: 'result', requestId: msg.requestId, result }));
-                    })
+                    (0, logger_1.log)(`[agent] callTool resolved — tool="${msg.tool}" requestId=${msg.requestId}, sending result`);
+                    this.ws?.send(JSON.stringify({ type: 'result', requestId: msg.requestId, result }));
+                })
                     .catch((err) => {
-                        log(`[agent] callTool rejected — tool="${msg.tool}" requestId=${msg.requestId}: ${err}`);
-                        this.ws?.send(JSON.stringify({ type: 'error', requestId: msg.requestId, message: String(err) }));
-                    });
+                    (0, logger_1.log)(`[agent] callTool rejected — tool="${msg.tool}" requestId=${msg.requestId}: ${err}`);
+                    this.ws?.send(JSON.stringify({ type: 'error', requestId: msg.requestId, message: String(err) }));
+                });
                 break;
             case 'ping':
                 this.ws?.send(JSON.stringify({ type: 'pong' }));
                 break;
         }
     }
-
-    stop(): void {
+    stop() {
         this.intentionallyStopped = true;
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
@@ -506,62 +497,54 @@ export class ServerlessServer {
         }
         this.wsUrl = null;
     }
-
-    private usePtyFallback(): boolean {
+    usePtyFallback() {
         return this.terminalEngine === 'force-fallback';
     }
-
-    appendDebugOutput(output: string, category?: string): void {
+    appendDebugOutput(output, category) {
         const prefix = category && category !== 'stdout' ? `[${category}] ` : '';
         const lines = output.split('\n');
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i].replace(/\r$/, '');
-            if (i === lines.length - 1 && line === '') continue;
+            if (i === lines.length - 1 && line === '')
+                continue;
             this.debugOutputBuffer.push(prefix + line);
         }
         if (this.debugOutputBuffer.length > this.maxDebugOutputLines) {
             this.debugOutputBuffer.splice(0, this.debugOutputBuffer.length - this.maxDebugOutputLines);
         }
     }
-
-    readDebugOutput(lines?: number): string {
-        if (this.debugOutputBuffer.length === 0) return '(no debug output)';
+    readDebugOutput(lines) {
+        if (this.debugOutputBuffer.length === 0)
+            return '(no debug output)';
         const slice = lines ? this.debugOutputBuffer.slice(-lines) : this.debugOutputBuffer;
         return slice.join('\n');
     }
-
-    clearDebugOutput(): void {
+    clearDebugOutput() {
         this.debugOutputBuffer = [];
     }
-
-    async callTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
-        log(`[agent] callTool start: name="${name}"`);
-        const text = (s: string): ToolResult => ({ content: [{ type: 'text', text: s }] });
-
+    async callTool(name, args) {
+        (0, logger_1.log)(`[agent] callTool start: name="${name}"`);
+        const text = (s) => ({ content: [{ type: 'text', text: s }] });
         switch (name) {
             case 'terminal_list_sessions': {
-                log(`[agent] terminal_list_sessions: session="${this.sessionId}"`);
+                (0, logger_1.log)(`[agent] terminal_list_sessions: session="${this.sessionId}"`);
                 return text(`[hub] session="${this.sessionId}"`);
             }
-
             case 'terminal_list': {
-                log(`[agent] terminal_list: session="${this.sessionId}"`);
+                (0, logger_1.log)(`[agent] terminal_list: session="${this.sessionId}"`);
                 const terminals = this.terminalManager.listTerminals();
-                if (terminals.length === 0) return text('No terminals open.');
-                const lines = terminals.map(
-                    (t) =>
-                        `[${t.id}] "${t.name}"${t.isActive ? ' (active)' : ''}${t.hasShellIntegration ? ' [shell-integration]' : ' [no shell-integration]'}`
-                );
+                if (terminals.length === 0)
+                    return text('No terminals open.');
+                const lines = terminals.map((t) => `[${t.id}] "${t.name}"${t.isActive ? ' (active)' : ''}${t.hasShellIntegration ? ' [shell-integration]' : ' [no shell-integration]'}`);
                 return text(lines.join('\n'));
             }
-
             case 'terminal_run': {
-                log(`[agent] terminal_run: command="${args.command}" session="${this.sessionId}"`);
-                const command = args.command as string;
-                const terminalName = args.terminal_name as string | undefined;
-                const wait = (args.wait as boolean | undefined) ?? true;
-                const timeoutMs = (args.timeout_ms as number | undefined) ?? 300_000;
-                const stdin = args.stdin as string | undefined;
+                (0, logger_1.log)(`[agent] terminal_run: command="${args.command}" session="${this.sessionId}"`);
+                const command = args.command;
+                const terminalName = args.terminal_name;
+                const wait = args.wait ?? true;
+                const timeoutMs = args.timeout_ms ?? 300000;
+                const stdin = args.stdin;
                 if (this.usePtyFallback()) {
                     if (!wait) {
                         const result = await this.ptyManager.startBackgroundExecution(command, terminalName);
@@ -583,64 +566,62 @@ export class ServerlessServer {
                 const result = await this.terminalManager.executeCommand(command, terminalName, timeoutMs);
                 return text(this.formatCommandResult(result));
             }
-
             case 'terminal_create': {
-                log(`[agent] terminal_create: name="${args.name}" session="${this.sessionId}"`);
-                const name = args.name as string;
-                const cwd = args.cwd as string | undefined;
-                const engine = args.engine as 'auto' | 'shell' | 'pty' | undefined;
-                const shell = args.shell as string | undefined;
+                (0, logger_1.log)(`[agent] terminal_create: name="${args.name}" session="${this.sessionId}"`);
+                const name = args.name;
+                const cwd = args.cwd;
+                const engine = args.engine;
+                const shell = args.shell;
                 const usePty = engine === 'pty' || (engine === 'auto' && this.usePtyFallback());
-                let result: { terminalName: string; engine: 'shell-integration' | 'pty-fallback' };
+                let result;
                 if (usePty) {
                     result = this.ptyManager.createTerminal(name, cwd, shell);
-                } else {
+                }
+                else {
                     result = await this.terminalManager.createTerminal(name, cwd, shell);
                 }
                 return text(`Created terminal "${result.terminalName}" (engine: ${result.engine})`);
             }
-
             case 'terminal_send_text': {
-                const rawText = args.text as string;
+                const rawText = args.text;
                 const processed = rawText
                     .replace(/\\x03/g, '\x03')
                     .replace(/\\x04/g, '\x04')
                     .replace(/\\n/g, '\n');
-                const terminalName = args.terminal_name as string | undefined;
-                const addNewline = (args.add_newline as boolean | undefined) ?? true;
+                const terminalName = args.terminal_name;
+                const addNewline = args.add_newline ?? true;
                 if (this.usePtyFallback()) {
                     this.ptyManager.sendText(processed, terminalName, addNewline);
-                } else {
+                }
+                else {
                     this.terminalManager.sendText(processed, terminalName, addNewline);
                 }
                 return text(`Text sent to terminal${terminalName ? ` "${terminalName}"` : ''}.`);
             }
-
             case 'terminal_read_output': {
-                const terminalName = args.terminal_name as string | undefined;
-                const lines = args.lines as number | undefined;
+                const terminalName = args.terminal_name;
+                const lines = args.lines;
                 if (this.usePtyFallback()) {
                     return text(this.ptyManager.readOutput(terminalName, lines));
                 }
                 return text(this.terminalManager.readOutput(terminalName, lines));
             }
-
             case 'terminal_clear_buffer': {
-                const terminalName = args.terminal_name as string | undefined;
+                const terminalName = args.terminal_name;
                 if (this.usePtyFallback()) {
                     this.ptyManager.clearBuffer(terminalName);
-                } else {
+                }
+                else {
                     this.terminalManager.clearBuffer(terminalName);
                 }
                 return text('Buffer cleared.');
             }
-
             case 'terminal_wait': {
-                const terminalName = args.terminal_name as string;
+                const terminalName = args.terminal_name;
                 if (!terminalName) {
                     throw new Error("terminal_wait requires 'terminal_name'.");
                 }
-                const timeoutMs = (args.timeout_ms as number | undefined) ?? 300_000;
+                const timeoutMs = args.timeout_ms ?? 300000;
                 if (this.usePtyFallback()) {
                     const result = await this.ptyManager.waitForExecution(terminalName, timeoutMs);
                     return text(this.formatCommandResult(result));
@@ -648,43 +629,39 @@ export class ServerlessServer {
                 const result = await this.terminalManager.waitForExecution(terminalName, timeoutMs);
                 return text(this.formatCommandResult(result));
             }
-
             case 'get_diagnostics': {
-                const uri = args.uri as string | undefined;
-                const severity = args.severity as string | undefined;
-
-                const severityMap: Record<string, vscode.DiagnosticSeverity> = {
+                const uri = args.uri;
+                const severity = args.severity;
+                const severityMap = {
                     error: vscode.DiagnosticSeverity.Error,
                     warning: vscode.DiagnosticSeverity.Warning,
                     information: vscode.DiagnosticSeverity.Information,
                     hint: vscode.DiagnosticSeverity.Hint,
                 };
-                const severityNames: Record<number, string> = {
+                const severityNames = {
                     [vscode.DiagnosticSeverity.Error]: 'Error',
                     [vscode.DiagnosticSeverity.Warning]: 'Warning',
                     [vscode.DiagnosticSeverity.Information]: 'Information',
                     [vscode.DiagnosticSeverity.Hint]: 'Hint',
                 };
                 const filterSeverity = severity ? severityMap[severity] : undefined;
-
-                let allDiagnostics: [vscode.Uri, vscode.Diagnostic[]][];
+                let allDiagnostics;
                 if (uri) {
                     const fileUri = uri.includes('://') ? vscode.Uri.parse(uri) : vscode.Uri.file(uri);
                     const diags = vscode.languages.getDiagnostics(fileUri);
                     allDiagnostics = diags.length > 0 ? [[fileUri, diags]] : [];
-                } else {
+                }
+                else {
                     allDiagnostics = vscode.languages.getDiagnostics();
                 }
-
-                const lines: string[] = [];
+                const lines = [];
                 let totalCount = 0;
-
                 for (const [fileUri, diagnostics] of allDiagnostics) {
                     const filtered = filterSeverity !== undefined
                         ? diagnostics.filter((d) => d.severity === filterSeverity)
                         : diagnostics;
-                    if (filtered.length === 0) continue;
-
+                    if (filtered.length === 0)
+                        continue;
                     const relPath = vscode.workspace.asRelativePath(fileUri);
                     for (const d of filtered) {
                         const sev = severityNames[d.severity] || 'Unknown';
@@ -695,28 +672,21 @@ export class ServerlessServer {
                         totalCount++;
                     }
                 }
-
                 if (totalCount === 0) {
                     return text(uri ? `No diagnostics for ${uri}.` : 'No diagnostics found.');
                 }
                 return text(`${totalCount} diagnostic(s):\n\n${lines.join('\n')}`);
             }
-
             case 'get_document_symbols': {
-                const uri = args.uri as string;
+                const uri = args.uri;
                 const fileUri = uri.includes('://') ? vscode.Uri.parse(uri) : vscode.Uri.file(uri);
-                const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
-                    'vscode.executeDocumentSymbolProvider',
-                    fileUri
-                );
+                const symbols = await vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', fileUri);
                 if (!symbols || symbols.length === 0) {
                     return text(`No symbols found in ${uri}. The file may not have a language server active.`);
                 }
-
-                const symbolKindName = (kind: vscode.SymbolKind): string => vscode.SymbolKind[kind] || 'Unknown';
-
-                const lines: string[] = [];
-                const walk = (syms: vscode.DocumentSymbol[], indent: number) => {
+                const symbolKindName = (kind) => vscode.SymbolKind[kind] || 'Unknown';
+                const lines = [];
+                const walk = (syms, indent) => {
                     for (const s of syms) {
                         const prefix = '  '.repeat(indent);
                         const range = `${s.range.start.line + 1}–${s.range.end.line + 1}`;
@@ -729,26 +699,21 @@ export class ServerlessServer {
                 walk(symbols, 0);
                 return text(`${lines.length} symbol(s) in ${vscode.workspace.asRelativePath(fileUri)}:\n\n${lines.join('\n')}`);
             }
-
             case 'get_references': {
-                const uri = args.uri as string;
-                const line = args.line as number;
-                const character = args.character as number;
+                const uri = args.uri;
+                const line = args.line;
+                const character = args.character;
                 if (!Number.isInteger(line) || !Number.isInteger(character) || line < 0 || character < 0) {
                     return text('Error: line and character must be non-negative integers.');
                 }
                 const fileUri = uri.includes('://') ? vscode.Uri.parse(uri) : vscode.Uri.file(uri);
                 const position = new vscode.Position(line, character);
-                const locations = await vscode.commands.executeCommand<vscode.Location[]>(
-                    'vscode.executeReferenceProvider',
-                    fileUri,
-                    position
-                );
+                const locations = await vscode.commands.executeCommand('vscode.executeReferenceProvider', fileUri, position);
                 if (!locations || locations.length === 0) {
                     return text(`No references found at ${uri}:${line}:${character}.`);
                 }
                 const MAX_REFS = 500;
-                const lines: string[] = locations.map((loc) => {
+                const lines = locations.map((loc) => {
                     const relPath = vscode.workspace.asRelativePath(loc.uri);
                     const l = loc.range.start.line + 1;
                     const c = loc.range.start.character + 1;
@@ -758,38 +723,27 @@ export class ServerlessServer {
                 const suffix = lines.length > MAX_REFS ? `\n... and ${lines.length - MAX_REFS} more.` : '';
                 return text(`${locations.length} reference(s):\n\n${output}${suffix}`);
             }
-
             case 'rename_symbol': {
-                const uri = args.uri as string;
-                const line = args.line as number;
-                const character = args.character as number;
+                const uri = args.uri;
+                const line = args.line;
+                const character = args.character;
                 if (!Number.isInteger(line) || !Number.isInteger(character) || line < 0 || character < 0) {
                     return text('Error: line and character must be non-negative integers.');
                 }
-                const newName = args.new_name as string;
+                const newName = args.new_name;
                 const fileUri = uri.includes('://') ? vscode.Uri.parse(uri) : vscode.Uri.file(uri);
                 const position = new vscode.Position(line, character);
-
-                let prepareResult: unknown;
+                let prepareResult;
                 try {
-                    prepareResult = await vscode.commands.executeCommand(
-                        'vscode.prepareRename',
-                        fileUri,
-                        position
-                    );
-                } catch (prepErr) {
+                    prepareResult = await vscode.commands.executeCommand('vscode.prepareRename', fileUri, position);
+                }
+                catch (prepErr) {
                     return text(`Cannot rename at ${uri}:${line}:${character} — ${prepErr}`);
                 }
                 if (!prepareResult) {
                     return text(`Cannot rename symbol at ${uri}:${line}:${character}. The element at this position is not renameable.`);
                 }
-
-                const edit = await vscode.commands.executeCommand<vscode.WorkspaceEdit>(
-                    'vscode.executeDocumentRenameProvider',
-                    fileUri,
-                    position,
-                    newName
-                );
+                const edit = await vscode.commands.executeCommand('vscode.executeDocumentRenameProvider', fileUri, position, newName);
                 if (!edit) {
                     return text(`Cannot rename symbol at ${uri}:${line}:${character}. No rename provider available.`);
                 }
@@ -805,14 +759,15 @@ export class ServerlessServer {
                 const fileList = entries.map(([u]) => vscode.workspace.asRelativePath(u));
                 for (const [affectedUri] of entries) {
                     const doc = await vscode.workspace.openTextDocument(affectedUri);
-                    if (doc.isDirty) { await doc.save(); }
+                    if (doc.isDirty) {
+                        await doc.save();
+                    }
                 }
                 return text(`Renamed to "${newName}" — ${totalEdits} edit(s) across ${entries.length} file(s):\n${fileList.join('\n')}`);
             }
-
             case 'run_command': {
-                const command = args.command as string;
-                const commandArgs = args.args as unknown[] | undefined;
+                const command = args.command;
+                const commandArgs = args.args;
                 try {
                     const result = commandArgs
                         ? await vscode.commands.executeCommand(command, ...commandArgs)
@@ -824,113 +779,79 @@ export class ServerlessServer {
                         return text(result);
                     }
                     return text(JSON.stringify(result, null, 2));
-                } catch (e) {
+                }
+                catch (e) {
                     return text(`Command "${command}" failed: ${e}`);
                 }
             }
-
             case 'open_file': {
-                const file = args.file as string;
-                const line = args.line as number | undefined;
-                const endLine = args.end_line as number | undefined;
+                const file = args.file;
+                const line = args.line;
+                const endLine = args.end_line;
                 const fileUri = file.includes('://') ? vscode.Uri.parse(file) : vscode.Uri.file(file);
-
                 const doc = await vscode.workspace.openTextDocument(fileUri);
                 const editor = await vscode.window.showTextDocument(doc);
-
                 if (line !== undefined) {
                     const startLine = Math.min(Math.max(line - 1, 0), doc.lineCount - 1);
                     const startPos = new vscode.Position(startLine, 0);
                     const endPos = endLine
-                        ? new vscode.Position(
-                            Math.min(endLine - 1, doc.lineCount - 1),
-                            doc.lineAt(Math.min(endLine - 1, doc.lineCount - 1)).text.length
-                        )
+                        ? new vscode.Position(Math.min(endLine - 1, doc.lineCount - 1), doc.lineAt(Math.min(endLine - 1, doc.lineCount - 1)).text.length)
                         : startPos;
                     editor.revealRange(new vscode.Range(startPos, endPos), vscode.TextEditorRevealType.InCenter);
                     editor.selection = new vscode.Selection(startPos, endPos);
                 }
-
                 const rel = vscode.workspace.asRelativePath(fileUri);
                 return text(`Opened ${rel}${line ? ` at line ${line}` : ''}${endLine ? `–${endLine}` : ''}`);
             }
-
             case 'format_document': {
-                const file = args.file as string;
+                const file = args.file;
                 const fileUri = file.includes('://') ? vscode.Uri.parse(file) : vscode.Uri.file(file);
-
                 const config = vscode.workspace.getConfiguration('editor', fileUri);
-                const options: vscode.FormattingOptions = {
-                    tabSize: config.get<number>('tabSize', 4),
-                    insertSpaces: config.get<boolean>('insertSpaces', true),
+                const options = {
+                    tabSize: config.get('tabSize', 4),
+                    insertSpaces: config.get('insertSpaces', true),
                 };
-
-                const edits = await vscode.commands.executeCommand<vscode.TextEdit[]>(
-                    'vscode.executeFormatDocumentProvider',
-                    fileUri,
-                    options
-                );
-
+                const edits = await vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', fileUri, options);
                 if (!edits || edits.length === 0) {
                     return text(`No formatting changes needed for ${vscode.workspace.asRelativePath(fileUri)}.`);
                 }
-
                 const wsEdit = new vscode.WorkspaceEdit();
                 for (const edit of edits) {
                     wsEdit.replace(fileUri, edit.range, edit.newText);
                 }
                 await vscode.workspace.applyEdit(wsEdit);
-
                 const doc = await vscode.workspace.openTextDocument(fileUri);
-                if (doc.isDirty) await doc.save();
-
+                if (doc.isDirty)
+                    await doc.save();
                 return text(`Formatted ${vscode.workspace.asRelativePath(fileUri)} (${edits.length} edit(s) applied).`);
             }
-
             case 'organize_imports': {
-                const file = args.file as string;
+                const file = args.file;
                 const fileUri = file.includes('://') ? vscode.Uri.parse(file) : vscode.Uri.file(file);
                 const doc = await vscode.workspace.openTextDocument(fileUri);
                 const fullRange = doc.validateRange(new vscode.Range(0, 0, doc.lineCount, 0));
-
-                const actions = await vscode.commands.executeCommand<vscode.CodeAction[]>(
-                    'vscode.executeCodeActionProvider',
-                    fileUri,
-                    fullRange,
-                    vscode.CodeActionKind.SourceOrganizeImports.value
-                );
-
+                const actions = await vscode.commands.executeCommand('vscode.executeCodeActionProvider', fileUri, fullRange, vscode.CodeActionKind.SourceOrganizeImports.value);
                 if (!actions || actions.length === 0) {
                     return text(`No import changes needed for ${vscode.workspace.asRelativePath(fileUri)}.`);
                 }
-
                 for (const action of actions) {
                     if (action.edit) {
                         await vscode.workspace.applyEdit(action.edit);
                     }
                 }
-
-                if (doc.isDirty) await doc.save();
+                if (doc.isDirty)
+                    await doc.save();
                 return text(`Organized imports in ${vscode.workspace.asRelativePath(fileUri)}.`);
             }
-
             case 'fix_all': {
-                const file = args.file as string;
+                const file = args.file;
                 const fileUri = file.includes('://') ? vscode.Uri.parse(file) : vscode.Uri.file(file);
                 const doc = await vscode.workspace.openTextDocument(fileUri);
                 const fullRange = doc.validateRange(new vscode.Range(0, 0, doc.lineCount, 0));
-
-                const actions = await vscode.commands.executeCommand<vscode.CodeAction[]>(
-                    'vscode.executeCodeActionProvider',
-                    fileUri,
-                    fullRange,
-                    vscode.CodeActionKind.SourceFixAll.value
-                );
-
+                const actions = await vscode.commands.executeCommand('vscode.executeCodeActionProvider', fileUri, fullRange, vscode.CodeActionKind.SourceFixAll.value);
                 if (!actions || actions.length === 0) {
                     return text(`No auto-fixable issues in ${vscode.workspace.asRelativePath(fileUri)}.`);
                 }
-
                 let fixCount = 0;
                 for (const action of actions) {
                     if (action.edit) {
@@ -938,26 +859,23 @@ export class ServerlessServer {
                         fixCount++;
                     }
                 }
-
                 if (fixCount === 0) {
                     return text(`No auto-fixable issues in ${vscode.workspace.asRelativePath(fileUri)}.`);
                 }
-                if (doc.isDirty) await doc.save();
+                if (doc.isDirty)
+                    await doc.save();
                 return text(`Applied ${fixCount} fix(es) in ${vscode.workspace.asRelativePath(fileUri)}.`);
             }
-
             case 'save_all': {
                 await vscode.workspace.saveAll(false);
                 return text('All files saved.');
             }
-
             case 'find_in_files': {
-                const query = args.query as string;
-                const replace = args.replace as string | undefined;
-                const isRegex = args.is_regex as boolean | undefined;
-                const include = args.include as string | undefined;
-                const exclude = args.exclude as string | undefined;
-
+                const query = args.query;
+                const replace = args.replace;
+                const isRegex = args.is_regex;
+                const include = args.include;
+                const exclude = args.exclude;
                 await vscode.commands.executeCommand('workbench.action.findInFiles', {
                     query,
                     replace,
@@ -966,145 +884,126 @@ export class ServerlessServer {
                     filesToExclude: exclude ?? '',
                     triggerSearch: true,
                 });
-
                 return text(`Search opened for "${query}"${replace ? ` with replace "${replace}"` : ''}.`);
             }
-
             case 'get_hover_info': {
-                const uri = args.uri as string;
-                const line = args.line as number;
-                const character = args.character as number;
+                const uri = args.uri;
+                const line = args.line;
+                const character = args.character;
                 const fileUri = uri.includes('://') ? vscode.Uri.parse(uri) : vscode.Uri.file(uri);
                 const position = new vscode.Position(line, character);
-
-                const hovers = await vscode.commands.executeCommand<vscode.Hover[]>(
-                    'vscode.executeHoverProvider',
-                    fileUri,
-                    position
-                );
-
+                const hovers = await vscode.commands.executeCommand('vscode.executeHoverProvider', fileUri, position);
                 if (!hovers || hovers.length === 0) {
                     return text(`No hover info at ${vscode.workspace.asRelativePath(fileUri)}:${line}:${character}.`);
                 }
-
-                const parts: string[] = [];
+                const parts = [];
                 for (const hover of hovers) {
                     for (const content of hover.contents) {
                         if (typeof content === 'string') {
                             parts.push(content);
-                        } else if ('value' in content) {
+                        }
+                        else if ('value' in content) {
                             parts.push(content.value);
                         }
                     }
                 }
-
                 return text(parts.join('\n\n'));
             }
-
             case 'debug_breakpoints': {
-                const action = args.action as string;
-
+                const action = args.action;
                 if (action === 'list') {
                     const bps = vscode.debug.breakpoints;
-                    if (bps.length === 0) return text('No breakpoints set.');
-                    const lines: string[] = [];
+                    if (bps.length === 0)
+                        return text('No breakpoints set.');
+                    const lines = [];
                     for (const bp of bps) {
                         if (bp instanceof vscode.SourceBreakpoint) {
                             const loc = bp.location;
                             const rel = vscode.workspace.asRelativePath(loc.uri);
                             const line = loc.range.start.line + 1;
                             let desc = `${rel}:${line}`;
-                            if (bp.condition) desc += ` condition="${bp.condition}"`;
-                            if (bp.hitCondition) desc += ` hitCondition="${bp.hitCondition}"`;
-                            if (bp.logMessage) desc += ` log="${bp.logMessage}"`;
-                            if (!bp.enabled) desc += ' (disabled)';
+                            if (bp.condition)
+                                desc += ` condition="${bp.condition}"`;
+                            if (bp.hitCondition)
+                                desc += ` hitCondition="${bp.hitCondition}"`;
+                            if (bp.logMessage)
+                                desc += ` log="${bp.logMessage}"`;
+                            if (!bp.enabled)
+                                desc += ' (disabled)';
                             lines.push(desc);
-                        } else if (bp instanceof vscode.FunctionBreakpoint) {
+                        }
+                        else if (bp instanceof vscode.FunctionBreakpoint) {
                             let desc = `function: ${bp.functionName}`;
-                            if (bp.condition) desc += ` condition="${bp.condition}"`;
-                            if (!bp.enabled) desc += ' (disabled)';
+                            if (bp.condition)
+                                desc += ` condition="${bp.condition}"`;
+                            if (!bp.enabled)
+                                desc += ' (disabled)';
                             lines.push(desc);
                         }
                     }
                     return text(`${lines.length} breakpoint(s):\n${lines.join('\n')}`);
                 }
-
                 if (action === 'clear') {
                     const bps = vscode.debug.breakpoints;
-                    if (bps.length === 0) return text('No breakpoints to clear.');
+                    if (bps.length === 0)
+                        return text('No breakpoints to clear.');
                     vscode.debug.removeBreakpoints(bps);
                     return text(`Cleared ${bps.length} breakpoint(s).`);
                 }
-
-                const file = args.file as string | undefined;
-                const line = args.line as number | undefined;
+                const file = args.file;
+                const line = args.line;
                 if (!file || line === undefined) {
                     return text('Error: "file" and "line" are required for add/remove.');
                 }
                 const fileUri = file.includes('://') ? vscode.Uri.parse(file) : vscode.Uri.file(file);
                 const position = new vscode.Position(line - 1, 0);
                 const location = new vscode.Location(fileUri, position);
-
                 if (action === 'add') {
-                    const bp = new vscode.SourceBreakpoint(
-                        location,
-                        true,
-                        args.condition as string | undefined,
-                        args.hit_condition as string | undefined,
-                        args.log_message as string | undefined,
-                    );
+                    const bp = new vscode.SourceBreakpoint(location, true, args.condition, args.hit_condition, args.log_message);
                     vscode.debug.addBreakpoints([bp]);
                     const rel = vscode.workspace.asRelativePath(fileUri);
                     return text(`Breakpoint added: ${rel}:${line}`);
                 }
-
                 if (action === 'remove') {
-                    const match = vscode.debug.breakpoints.find(
-                        (bp) =>
-                            bp instanceof vscode.SourceBreakpoint &&
-                            bp.location.uri.fsPath === fileUri.fsPath &&
-                            bp.location.range.start.line === line - 1
-                    );
+                    const match = vscode.debug.breakpoints.find((bp) => bp instanceof vscode.SourceBreakpoint &&
+                        bp.location.uri.fsPath === fileUri.fsPath &&
+                        bp.location.range.start.line === line - 1);
                     if (!match) {
                         return text(`No breakpoint found at ${vscode.workspace.asRelativePath(fileUri)}:${line}.`);
                     }
                     vscode.debug.removeBreakpoints([match]);
                     return text(`Breakpoint removed: ${vscode.workspace.asRelativePath(fileUri)}:${line}`);
                 }
-
                 return text(`Unknown breakpoint action: "${action}". Use add, remove, list, or clear.`);
             }
-
             case 'debug_start': {
-                const configName = args.name as string | undefined;
-                const inlineConfig = args.config as vscode.DebugConfiguration | undefined;
+                const configName = args.name;
+                const inlineConfig = args.config;
                 const folder = vscode.workspace.workspaceFolders?.[0];
-
-                let started: boolean;
+                let started;
                 if (inlineConfig) {
                     started = await vscode.debug.startDebugging(folder, inlineConfig);
-                } else if (configName) {
-                    started = await vscode.debug.startDebugging(folder, configName);
-                } else {
-                    started = await vscode.debug.startDebugging(folder, undefined as unknown as string);
                 }
-
+                else if (configName) {
+                    started = await vscode.debug.startDebugging(folder, configName);
+                }
+                else {
+                    started = await vscode.debug.startDebugging(folder, undefined);
+                }
                 if (!started) {
                     return text('Failed to start debug session. Check that a valid launch configuration exists.');
                 }
                 await new Promise((r) => setTimeout(r, 500));
                 const session = vscode.debug.activeDebugSession;
-                return text(
-                    `Debug session started: "${session?.name ?? 'unknown'}" (type: ${session?.type ?? 'unknown'})`
-                );
+                return text(`Debug session started: "${session?.name ?? 'unknown'}" (type: ${session?.type ?? 'unknown'})`);
             }
-
             case 'debug_stop': {
-                const all = args.all as boolean | undefined;
-                const clearBps = args.clear_breakpoints as boolean | undefined;
+                const all = args.all;
+                const clearBps = args.clear_breakpoints;
                 if (all) {
                     await vscode.debug.stopDebugging(undefined);
-                } else {
+                }
+                else {
                     const session = vscode.debug.activeDebugSession;
                     if (!session) {
                         return text('No active debug session.');
@@ -1121,37 +1020,27 @@ export class ServerlessServer {
                 }
                 return text(msg);
             }
-
             case 'debug_state': {
                 const session = vscode.debug.activeDebugSession;
                 if (!session) {
                     return text('No active debug session.');
                 }
-                const targetThreadId = args.thread_id as number | undefined;
-                const maxDepth = (args.max_depth as number | undefined) ?? 1;
-
+                const targetThreadId = args.thread_id;
+                const maxDepth = args.max_depth ?? 1;
                 const threadsResp = await session.customRequest('threads');
-                const threads: Array<{ id: number; name: string }> = threadsResp.threads ?? [];
+                const threads = threadsResp.threads ?? [];
                 if (threads.length === 0) {
                     return text('No threads available.');
                 }
-
                 const filtered = targetThreadId
                     ? threads.filter((t) => t.id === targetThreadId)
                     : threads;
                 if (filtered.length === 0) {
                     return text(`Thread ${targetThreadId} not found. Available: ${threads.map((t) => t.id).join(', ')}`);
                 }
-
-                const output: string[] = [];
+                const output = [];
                 for (const thread of filtered) {
-                    let stackFrames: Array<{
-                        id: number;
-                        name: string;
-                        source?: { name?: string; path?: string };
-                        line: number;
-                        column: number;
-                    }> = [];
+                    let stackFrames = [];
                     let stoppedReason = '';
                     try {
                         const stResp = await session.customRequest('stackTrace', {
@@ -1160,27 +1049,21 @@ export class ServerlessServer {
                             levels: 20,
                         });
                         stackFrames = stResp.stackFrames ?? [];
-                    } catch {
+                    }
+                    catch {
                         stoppedReason = 'running';
                     }
-
-                    output.push(
-                        `Thread #${thread.id} "${thread.name}"${stoppedReason ? ` (${stoppedReason})` : ''}`
-                    );
-
+                    output.push(`Thread #${thread.id} "${thread.name}"${stoppedReason ? ` (${stoppedReason})` : ''}`);
                     for (const frame of stackFrames) {
                         const src = frame.source?.path
                             ? vscode.workspace.asRelativePath(frame.source.path)
                             : frame.source?.name ?? '<unknown>';
                         output.push(`  Frame #${frame.id}: ${src}:${frame.line} in ${frame.name}`);
-
-                        if (maxDepth < 1) continue;
-
+                        if (maxDepth < 1)
+                            continue;
                         try {
                             const scopesResp = await session.customRequest('scopes', { frameId: frame.id });
-                            const scopes: Array<{ name: string; variablesReference: number; expensive: boolean }> =
-                                scopesResp.scopes ?? [];
-
+                            const scopes = scopesResp.scopes ?? [];
                             for (const scope of scopes) {
                                 if (scope.expensive) {
                                     output.push(`    ${scope.name}: (expensive — skipped)`);
@@ -1189,30 +1072,28 @@ export class ServerlessServer {
                                 output.push(`    ${scope.name}:`);
                                 await this.expandVariables(session, scope.variablesReference, 1, maxDepth, 3, output);
                             }
-                        } catch {
+                        }
+                        catch {
                             // scopes unavailable for this frame
                         }
                     }
                 }
-
                 return text(output.join('\n'));
             }
-
             case 'debug_control': {
                 const session = vscode.debug.activeDebugSession;
                 if (!session) {
                     return text('No active debug session.');
                 }
-                const action = args.action as string;
-
+                const action = args.action;
                 if (action === 'evaluate') {
-                    const expression = args.expression as string | undefined;
+                    const expression = args.expression;
                     if (!expression) {
                         return text('Error: "expression" is required for evaluate.');
                     }
-                    const evalArgs: Record<string, unknown> = {
+                    const evalArgs = {
                         expression,
-                        context: (args.context as string) ?? 'repl',
+                        context: args.context ?? 'repl',
                     };
                     if (args.frame_id !== undefined) {
                         evalArgs.frameId = args.frame_id;
@@ -1220,58 +1101,46 @@ export class ServerlessServer {
                     const result = await session.customRequest('evaluate', evalArgs);
                     return text(result.result ?? '(no result)');
                 }
-
                 if (action === 'restart') {
                     await vscode.commands.executeCommand('workbench.action.debug.restart');
                     return text('Debug session restarting.');
                 }
-
-                let threadId = args.thread_id as number | undefined;
+                let threadId = args.thread_id;
                 if (threadId === undefined) {
                     const threadsResp = await session.customRequest('threads');
-                    const threads: Array<{ id: number }> = threadsResp.threads ?? [];
+                    const threads = threadsResp.threads ?? [];
                     if (threads.length === 0) {
                         return text('No threads available.');
                     }
                     threadId = threads[0].id;
                 }
-
                 try {
                     await session.customRequest(action, { threadId });
-                } catch (e) {
+                }
+                catch (e) {
                     return text(`"${action}" failed on thread ${threadId}: ${e}`);
                 }
                 return text(`"${action}" executed on thread ${threadId}.`);
             }
-
             case 'debug_console_output': {
-                const lines = args.lines as number | undefined;
-                const clear = args.clear as boolean | undefined;
+                const lines = args.lines;
+                const clear = args.clear;
                 const output = this.readDebugOutput(lines);
-                if (clear) this.clearDebugOutput();
+                if (clear)
+                    this.clearDebugOutput();
                 return text(output);
             }
-
             default:
-                log(`[agent] callTool done: name="${name}" -> error: Unknown tool`);
+                (0, logger_1.log)(`[agent] callTool done: name="${name}" -> error: Unknown tool`);
                 throw new Error(`Unknown tool: ${name}`);
         }
     }
-
-    private async expandVariables(
-        session: vscode.DebugSession,
-        variablesReference: number,
-        depth: number,
-        maxDepth: number,
-        indent: number,
-        output: string[],
-        visited = new Set<number>()
-    ): Promise<void> {
-        if (variablesReference === 0 || depth > maxDepth || visited.has(variablesReference)) return;
+    async expandVariables(session, variablesReference, depth, maxDepth, indent, output, visited = new Set()) {
+        if (variablesReference === 0 || depth > maxDepth || visited.has(variablesReference))
+            return;
         visited.add(variablesReference);
         const resp = await session.customRequest('variables', { variablesReference });
-        const vars: Array<{ name: string; value: string; variablesReference: number }> =
-            resp.variables ?? [];
+        const vars = resp.variables ?? [];
         const prefix = '  '.repeat(indent);
         for (const v of vars) {
             output.push(`${prefix}${v.name} = ${v.value}`);
@@ -1280,8 +1149,7 @@ export class ServerlessServer {
             }
         }
     }
-
-    private formatCommandResult(result: CommandResult): string {
+    formatCommandResult(result) {
         let response = result.output || '(no output)';
         if (result.exitCode !== undefined) {
             response += `\n[exit code: ${result.exitCode}]`;
@@ -1289,3 +1157,5 @@ export class ServerlessServer {
         return response;
     }
 }
+exports.ServerlessServer = ServerlessServer;
+//# sourceMappingURL=serverlessServer.js.map
