@@ -5,11 +5,14 @@ help: ## Show this help message
 	@echo ""
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-install: ## Install all dependencies (npm and Python)
-	@echo "Installing extension dependencies..."
-	cd extension && npm install
-	@echo "Installing Python package..."
-	pip3 install --break-system-packages . 2>/dev/null || pip install .
+install: ## Install all dependencies (npm and Python), build, install VSIX, and reload extension host
+	@echo "Building and installing extension..."
+	@$(MAKE) build
+	@vsix=$$(ls -t extension/*.vsix | head -1); \
+		echo "Installing $$vsix..."; \
+		code --force --install-extension "$$vsix" 2>&1; \
+		echo "Reloading extension host..."; \
+		pkill -f "bootstrap-fork.*--type=extensionHost"
 
 build: ## Build with auto-incremented version (patch)
 	@echo "Auto-incrementing version..."
