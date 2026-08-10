@@ -1,6 +1,7 @@
 ```
 # Build outputs
 extension/out/
+*.vsix
 
 # Dependencies
 node_modules/
@@ -13,7 +14,7 @@ node_modules/
 .env
 .env.local
 *.env.*
-
+*.override.*
 # Editors
 .vscode/
 .idea/
