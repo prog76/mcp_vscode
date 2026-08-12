@@ -1,7 +1,10 @@
 import * as http from 'http';
 import WebSocket from 'ws';
 import { ServerlessServer, ToolResult, TOOLS } from './serverlessServer';
+import { CONFIG_DEFAULTS } from './config';
 import { log } from './logger';
+import { parseWsMessage, sendMessage, replaceSocket, RequestCorrelator, newRequestId } from './wsProtocol';
+import { jsonrpcResult, jsonrpcError, JsonRpcErrorCode } from './mcpResponse';
 
 interface SatelliteInfo {
     sessionId: string;
@@ -33,8 +36,8 @@ export class HubServer {
         ownSessionId: string,
         extensionVersion: string,
         port: number,
-        host: string = '127.0.0.1',
-        satelliteTimeoutMs: number = 120_000
+        host: string = CONFIG_DEFAULTS.host,
+        satelliteTimeoutMs: number = CONFIG_DEFAULTS.satelliteTimeoutMs
     ) {
         this.ownAgent = ownAgent;
         this.ownSessionId = ownSessionId;
@@ -129,21 +132,22 @@ export class HubServer {
         }, 5000);
 
         ws.on('message', (data) => {
-            let msg: any;
-            try {
-                msg = JSON.parse(data.toString());
-            } catch {
-                return;
-            }
+            const msg = parseWsMessage(data);
+            if (!msg) return;
 
             switch (msg.type) {
                 case 'register':
                     if (msg.sessionId) {
                         registered = true;
                         clearTimeout(timeout);
+                        const existing = this.satellites.get(msg.sessionId);
+                        if (existing && existing.ws !== ws) {
+                            log(`[hub] Replacing existing satellite connection for "${msg.sessionId}"`);
+                            replaceSocket(existing.ws);
+                        }
                         log(`[hub] Satellite registered: "${msg.sessionId}"`);
                         this.satellites.set(msg.sessionId, { sessionId: msg.sessionId, ws, lastSeen: Date.now() });
-                        ws.send(JSON.stringify({ type: 'registered', sessionId: msg.sessionId }));
+                        sendMessage(ws, { type: 'registered', sessionId: msg.sessionId });
                         this.emitEvent({
                             type: 'satellite-connected',
                             sessionId: msg.sessionId,
@@ -184,18 +188,14 @@ export class HubServer {
         });
     }
 
-    private pendingRequests = new Map<string, { resolve: (value: ToolResult) => void; reject: (reason?: unknown) => void; timeout: NodeJS.Timeout }>();
+    private pendingRequests = new RequestCorrelator<ToolResult>();
 
     private handleSatelliteResult(msg: any): void {
-        const pending = this.pendingRequests.get(msg.requestId);
-        if (!pending) return;
-        this.pendingRequests.delete(msg.requestId);
-        clearTimeout(pending.timeout);
         log(`[hub] Satellite ${msg.type} for requestId=${msg.requestId}`);
         if (msg.type === 'error') {
-            pending.reject(new Error(msg.message || 'Satellite error'));
+            this.pendingRequests.reject(msg.requestId, new Error(msg.message || 'Satellite error'));
         } else {
-            pending.resolve(msg.result as ToolResult);
+            this.pendingRequests.resolve(msg.requestId, msg.result as ToolResult);
         }
     }
 
@@ -244,11 +244,7 @@ export class HubServer {
                     res.end(JSON.stringify(response));
                 } catch (e) {
                     res.writeHead(400, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({
-                        jsonrpc: '2.0',
-                        id: null,
-                        error: { code: -32700, message: String(e) },
-                    }));
+                    res.end(JSON.stringify(jsonrpcError(null, JsonRpcErrorCode.ParseError, String(e))));
                 }
             });
             return;
@@ -260,27 +256,19 @@ export class HubServer {
 
     private async handleMcpRequest(msg: any): Promise<any> {
         if (msg.method === 'initialize') {
-            return {
-                jsonrpc: '2.0',
-                id: msg.id,
-                result: {
-                    protocolVersion: '2025-03-26',
-                    capabilities: { tools: {} },
-                    serverInfo: { name: 'vscode-mcp-hub', version: this.extensionVersion },
-                },
-            };
+            return jsonrpcResult(msg.id, {
+                protocolVersion: '2025-03-26',
+                capabilities: { tools: {} },
+                serverInfo: { name: 'vscode-mcp-hub', version: this.extensionVersion },
+            });
         }
 
         if (msg.method === 'notifications/initialized') {
-            return { jsonrpc: '2.0', id: msg.id, result: {} };
+            return jsonrpcResult(msg.id, {});
         }
 
         if (msg.method === 'tools/list') {
-            return {
-                jsonrpc: '2.0',
-                id: msg.id,
-                result: { tools: TOOLS },
-            };
+            return jsonrpcResult(msg.id, { tools: TOOLS });
         }
 
         if (msg.method === 'tools/call') {
@@ -292,13 +280,9 @@ export class HubServer {
                     `${this.ownSessionId} (hub)`,
                     ...Array.from(this.satellites.keys()).map((s) => `${s} (satellite)`),
                 ];
-                return {
-                    jsonrpc: '2.0',
-                    id: msg.id,
-                    result: {
-                        content: [{ type: 'text', text: sessions.length ? sessions.join('\n') : 'No sessions.' }],
-                    },
-                };
+                return jsonrpcResult(msg.id, {
+                    content: [{ type: 'text', text: sessions.length ? sessions.join('\n') : 'No sessions.' }],
+                });
             }
 
             const targetSession = args.session_id;
@@ -306,72 +290,63 @@ export class HubServer {
             if (!targetSession || targetSession === this.ownSessionId) {
                 try {
                     const result = await this.ownAgent.callTool(tool, args);
-                    return { jsonrpc: '2.0', id: msg.id, result };
+                    return jsonrpcResult(msg.id, result);
                 } catch (e) {
-                    return {
-                        jsonrpc: '2.0',
-                        id: msg.id,
-                        error: { code: -32603, message: String(e) },
-                    };
+                    return jsonrpcError(msg.id, JsonRpcErrorCode.InternalError, String(e));
                 }
             }
 
             const satellite = this.satellites.get(targetSession);
             if (!satellite) {
                 log(`[hub] Cannot route tool="${tool}": no satellite "${targetSession}"`);
-                return {
-                    jsonrpc: '2.0',
-                    id: msg.id,
-                    error: { code: -32602, message: `No session registered with id: ${targetSession}` },
-                };
+                return jsonrpcError(msg.id, JsonRpcErrorCode.InvalidParams, `No session registered with id: ${targetSession}`);
             }
 
-            const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            const requestId = newRequestId();
             log(`[hub] Routing tool="${tool}" to satellite "${targetSession}" (requestId=${requestId})`);
             try {
                 const result = await this.executeOnSatellite(satellite.ws, requestId, tool, args);
-                return { jsonrpc: '2.0', id: msg.id, result };
+                return jsonrpcResult(msg.id, result);
             } catch (e) {
-                return {
-                    jsonrpc: '2.0',
-                    id: msg.id,
-                    error: { code: -32603, message: String(e) },
-                };
+                return jsonrpcError(msg.id, JsonRpcErrorCode.InternalError, String(e));
             }
         }
 
-        return {
-            jsonrpc: '2.0',
-            id: msg.id ?? null,
-            error: { code: -32601, message: `Method not found: ${msg.method}` },
-        };
+        return jsonrpcError(msg.id ?? null, JsonRpcErrorCode.MethodNotFound, `Method not found: ${msg.method}`);
+    }
+
+    private resolveSatelliteWaitMs(tool: string, args: Record<string, unknown>): number {
+        const base = this.satelliteTimeoutMs;
+        if (tool === 'terminal_run' || tool === 'terminal_wait') {
+            const fromArgs = typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined;
+            const toolDefault =
+                tool === 'terminal_wait'
+                    ? CONFIG_DEFAULTS.terminalWaitTimeoutMs
+                    : CONFIG_DEFAULTS.terminalRunTimeoutMs;
+            return Math.max(base, fromArgs ?? toolDefault);
+        }
+        return base;
     }
 
     private executeOnSatellite(ws: WebSocket, requestId: string, tool: string, args: any): Promise<ToolResult> {
-        return new Promise((resolve, reject) => {
-            const timeoutMs = this.satelliteTimeoutMs;
-            const timeout = setTimeout(() => {
-                this.pendingRequests.delete(requestId);
-                log(`[hub] Satellite timed out for requestId=${requestId} tool="${tool}" after ${timeoutMs}ms`);
-                reject(new Error(`Satellite timed out for tool: ${tool}`));
-            }, timeoutMs);
-
-            this.pendingRequests.set(requestId, { resolve, reject, timeout });
-
-            try {
-                ws.send(JSON.stringify({
-                    type: 'execute',
-                    requestId,
-                    tool,
-                    params: args,
-                }));
-                log(`[hub] Sent execute to satellite — tool="${tool}" requestId=${requestId} (timeout=${timeoutMs}ms)`);
-            } catch (e) {
-                this.pendingRequests.delete(requestId);
-                clearTimeout(timeout);
-                log(`[hub] Failed to send execute to satellite — tool="${tool}" requestId=${requestId}: ${e}`);
-                reject(e);
-            }
+        const timeoutMs = this.resolveSatelliteWaitMs(tool, args || {});
+        const promise = this.pendingRequests.register(requestId, timeoutMs, (id) => {
+            log(`[hub] Satellite timed out for requestId=${id} tool="${tool}" after ${timeoutMs}ms`);
         });
+
+        const sent = sendMessage(ws, {
+            type: 'execute',
+            requestId,
+            tool,
+            params: args,
+        });
+        if (!sent) {
+            const err = new Error(`Failed to send execute to satellite — tool="${tool}" requestId=${requestId}`);
+            this.pendingRequests.reject(requestId, err);
+            log(`[hub] Failed to send execute to satellite — tool="${tool}" requestId=${requestId}`);
+            return promise;
+        }
+        log(`[hub] Sent execute to satellite — tool="${tool}" requestId=${requestId} (timeout=${timeoutMs}ms)`);
+        return promise;
     }
 }

@@ -1,30 +1,42 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import WebSocket from 'ws';
 import { TerminalManager, CommandResult } from './terminalManager';
 import { PtyTerminalManager } from './ptyTerminalManager';
+import { CONFIG_DEFAULTS, getTerminalRunTimeoutMs, getTerminalWaitTimeoutMs } from './config';
 import { log } from './logger';
+import { parseWsMessage, sendMessage, replaceSocket } from './wsProtocol';
 
 export interface ToolResult {
     content: Array<{ type: string; text: string }>;
+    isError?: boolean;
 }
 
 export const TOOLS = [
+    {
+        name: 'get_version',
+        description: 'Get the version of the vscode-mcp extension (read from package.json at runtime).',
+        inputSchema: { type: 'object', properties: {} },
+    },
     {
         name: 'terminal_create',
         description:
             'Create a new terminal explicitly. Use this when you need a fresh terminal with specific settings.\n' +
             'engine=shell uses VS Code shell integration (default). engine=pty uses node-pty fallback.\n' +
-            'Returns the created terminal name and engine used (shell-integration or pty-fallback).',
+            'Takes a name_prefix and returns the created terminal name, which is guaranteed unique: ' +
+            'the first terminal gets the prefix as its name (e.g. "build"), subsequent ones get "build_1", "build_2", ...\n' +
+            'Pass the returned name to terminal_run as terminal_name. Only terminals created here are listed by terminal_list.',
         inputSchema: {
             type: 'object',
             properties: {
-                name: { type: 'string', description: 'Terminal name' },
+                name_prefix: { type: 'string', description: 'Name prefix. The actual terminal name is this, or name_1, name_2, ... if taken.' },
                 cwd: { type: 'string', description: 'Working directory path' },
                 engine: { type: 'string', enum: ['auto', 'shell', 'pty'], description: 'Terminal engine (default: auto)' },
                 shell: { type: 'string', description: 'Shell executable path/name (optional)' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['name'],
+            required: ['name_prefix'],
         },
     },
     {
@@ -38,8 +50,9 @@ export const TOOLS = [
     {
         name: 'terminal_list',
         description:
-            'List open VS Code terminals. With session_id lists terminals in that session only.\n' +
-            'Each terminal shows its engine: [shell-integration] or [no shell-integration].',
+            'List terminals created via terminal_create in this session. With session_id lists terminals in that session only.\n' +
+            'Each entry shows the terminal name and its engine: [shell-integration] or [no shell-integration].\n' +
+            'Pass the shown name to terminal_run/terminal_wait as terminal_name. Terminals not created via terminal_create are not listed.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -51,17 +64,29 @@ export const TOOLS = [
         name: 'terminal_run',
         description:
             'Execute a shell command in a VS Code terminal and capture output.\n' +
-            'Blocks until the command finishes or timeout_ms elapses (default 300000 = 5 min). On timeout, ' +
-            'the command keeps running and the response ends with \'[STILL RUNNING — ...]\' — call terminal_wait to resume.\n' +
-            'For commands expected to exceed ~30s, prefer wait=false + progressive terminal_wait calls.\n' +
+            'Blocks until the command finishes or timeout_ms elapses.\n' +
+            'Default timeout_ms = vscode-mcp.terminalRunTimeoutMs from extension settings ' +
+            `(package.json default ${CONFIG_DEFAULTS.terminalRunTimeoutMs}).\n` +
+            'On timeout: this is a WAIT timeout (not a transport failure). The command KEEPS RUNNING; ' +
+            'the response ends with \'[STILL RUNNING — ...]\'. Do NOT re-run the same mutating command ' +
+            '(e.g. sed -i, rm, writes). Call terminal_wait to continue, or abort with terminal_send_text \'\\x03\'.\n' +
+            'When calling via skills.mcp_call / mcp2cli, set timeout_seconds >= timeout_ms/1000 (plus margin) ' +
+            'or the outer client may time out first with \'timed out after Ns\' while the shell command still runs.\n' +
+            'For long or SSH-remote work, prefer wait=false + progressive terminal_wait.\n' +
             'Returns final output with \'[exit code: N]\' on success.\n' +
-            'If terminal_name is omitted and no active terminal exists, a new terminal is auto-created and the response includes the engine used (shell-integration or pty-fallback).',
+            'If terminal_name is omitted and no active terminal exists, a new terminal is auto-created (not listed by terminal_list) and the response includes the engine used (shell-integration or pty-fallback).',
         inputSchema: {
             type: 'object',
             properties: {
                 command: { type: 'string', description: 'Shell command to execute' },
-                terminal_name: { type: 'string', description: 'Name of target terminal (optional)' },
-                timeout_ms: { type: 'number', description: 'Hard timeout in milliseconds (default: 300000)' },
+                terminal_name: { type: 'string', description: 'Name of a terminal created via terminal_create (optional; auto-creates if omitted)' },
+                timeout_ms: {
+                    type: 'number',
+                    description:
+                        'Hard wait in milliseconds. Optional; default is vscode-mcp.terminalRunTimeoutMs ' +
+                        `(${CONFIG_DEFAULTS.terminalRunTimeoutMs}). On expiry: command keeps running; ` +
+                        'response includes [STILL RUNNING]; use terminal_wait — do not treat as transport error or re-run mutators.',
+                },
                 wait: { type: 'boolean', description: 'Wait for output (default: true)' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
@@ -114,17 +139,24 @@ export const TOOLS = [
         name: 'terminal_wait',
         description:
             'Wait for the current (or most recent) execution in a terminal to finish, and return its ' +
-            'output and exit code. Blocks up to timeout_ms (default 300000). On timeout, returns output ' +
-            'accumulated during this wait with \'[STILL RUNNING — ...]\' — call again to continue waiting, ' +
-            'or send \'\\x03\' via terminal_send_text to abort.',
+            'output and exit code. Blocks up to timeout_ms.\n' +
+            'Default timeout_ms = vscode-mcp.terminalWaitTimeoutMs from extension settings ' +
+            `(package.json default ${CONFIG_DEFAULTS.terminalWaitTimeoutMs}).\n` +
+            'On timeout: WAIT timeout (not transport failure). Returns output accumulated during this wait ' +
+            'with \'[STILL RUNNING — ...]\'. Call again to continue waiting, or send \'\\x03\' via terminal_send_text to abort. ' +
+            'Do not re-run the original mutating command.',
         inputSchema: {
             type: 'object',
             properties: {
-                terminal_name: { type: 'string', description: 'Name of target terminal (required).' },
-                timeout_ms: { type: 'number', description: 'Max milliseconds to block (default: 300000).' },
+                terminal_name: { type: 'string', description: 'Name of a terminal created via terminal_create.' },
+                timeout_ms: {
+                    type: 'number',
+                    description:
+                        'Max milliseconds to block. Optional; default is vscode-mcp.terminalWaitTimeoutMs ' +
+                        `(${CONFIG_DEFAULTS.terminalWaitTimeoutMs}). On expiry: [STILL RUNNING]; call again — not a transport error.`,
+                },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['terminal_name'],
         },
     },
     {
@@ -201,7 +233,11 @@ export const TOOLS = [
     {
         name: 'open_file',
         description:
-            'Open a file in the VS Code editor and optionally jump to a line or highlight a range.',
+            'Open a file in the VS Code editor and optionally jump to a line or highlight a range. ' +
+            'NOTE: This is a VISUAL action only. It opens the file for the human user to see. ' +
+            'It does NOT return file contents to the agent, does NOT give edit capabilities, ' +
+            'and does NOT provide programmatic access to the file. ' +
+            'For reading files use terminal commands (e.g., cat, head, sed). ',
         inputSchema: {
             type: 'object',
             properties: {
@@ -395,6 +431,7 @@ export class ServerlessServer {
     private reconnectTimer: NodeJS.Timeout | null = null;
     private hubLostCallback: (() => void) | null = null;
     private intentionallyStopped = false;
+    private isReconnecting = false;
     readonly port = 0;
 
     constructor(
@@ -422,88 +459,95 @@ export class ServerlessServer {
 
     /** Connect to the hub as a satellite via WebSocket. */
     async connectAsSatellite(wsUrl: string): Promise<void> {
-        log(`[satellite] connectAsSatellite(${wsUrl}) — session="${this.sessionId}"`);
-        this.wsUrl = wsUrl;
-        if (this.ws) {
-            this.ws.close();
-            this.ws = null;
+        // Prevent multiple concurrent reconnection attempts — reject so caller
+        // does not treat a no-op as a successful connect.
+        if (this.isReconnecting) {
+            log(`[satellite] reconnect already in progress, skipping`);
+            throw new Error('Satellite reconnect already in progress');
         }
-        let hubLostAlreadyCalled = false;
-        await new Promise<void>((resolve, reject) => {
-            const ws = new WebSocket(wsUrl);
-            const onOpen = () => {
-                this.ws = ws;
-                log(`[satellite] WebSocket open, sending register for session="${this.sessionId}"`);
-                ws.send(JSON.stringify({ type: 'register', sessionId: this.sessionId }));
-                resolve();
-            };
-            const onClose = () => {
-                log(`[satellite] WebSocket closed — scheduling reconnect`);
-                this.ws = null;
-                if (!this.intentionallyStopped && this.wsUrl) {
-                    log(`[satellite] scheduling reconnect in 2000ms`);
-                    this.reconnectTimer = setTimeout(() => {
-                        this.connectAsSatellite(this.wsUrl!).catch(() => { });
-                    }, 2000);
-                }
-                if (!hubLostAlreadyCalled) {
-                    hubLostAlreadyCalled = true;
-                    this.hubLostCallback?.();
-                }
-            };
-            ws.on('open', onOpen);
-            ws.on('message', (data) => this.handleMessage(data));
-            ws.on('close', onClose);
-            ws.on('error', (err) => {
-                log(`[satellite] WebSocket error: ${err}`);
-                if (!this.ws) {
-                    cleanup();
-                    reject(err);
+        this.isReconnecting = true;
+        this.intentionallyStopped = false;
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        try {
+            log(`[satellite] connectAsSatellite(${wsUrl}) — session="${this.sessionId}"`);
+            this.wsUrl = wsUrl;
+            // Replace existing socket without firing hubLost / reconnect.
+            replaceSocket(this.ws);
+            this.ws = null;
+            let hubLostAlreadyCalled = false;
+            await new Promise<void>((resolve, reject) => {
+                const ws = new WebSocket(wsUrl);
+                const onOpen = () => {
+                    this.ws = ws;
+                    this.isReconnecting = false;
+                    log(`[satellite] WebSocket open, sending register for session="${this.sessionId}"`);
+                    sendMessage(ws, { type: 'register', sessionId: this.sessionId });
+                    resolve();
+                };
+                const onClose = () => {
+                    log(`[satellite] WebSocket closed`);
+                    this.ws = null;
+                    // Outer retryConnection owns reconnect; only notify once.
+                    if (!this.intentionallyStopped && !hubLostAlreadyCalled) {
+                        hubLostAlreadyCalled = true;
+                        this.hubLostCallback?.();
+                    }
+                };
+                ws.on('open', onOpen);
+                ws.on('message', (data) => this.handleMessage(data));
+                ws.on('close', onClose);
+                ws.on('error', (err) => {
+                    log(`[satellite] WebSocket error: ${err}`);
+                    if (!this.ws) {
+                        cleanup();
+                        reject(err);
+                    }
+                });
+                function cleanup() {
+                    ws.off('open', onOpen);
+                    ws.off('close', onClose);
                 }
             });
-            function cleanup() {
-                ws.off('open', onOpen);
-                ws.off('close', onClose);
-            }
-        });
+        } catch (e) {
+            this.isReconnecting = false;
+            throw e;
+        }
     }
 
     private handleMessage(data: WebSocket.RawData): void {
-        let msg: any;
-        try {
-            msg = JSON.parse(data.toString());
-        } catch {
-            return;
-        }
+        const msg = parseWsMessage(data);
+        if (!msg) return;
         switch (msg.type) {
             case 'execute':
                 log(`[satellite] execute received — tool="${msg.tool}" requestId=${msg.requestId}`);
                 this.callTool(msg.tool, msg.params || {})
                     .then((result) => {
                         log(`[agent] callTool resolved — tool="${msg.tool}" requestId=${msg.requestId}, sending result`);
-                        this.ws?.send(JSON.stringify({ type: 'result', requestId: msg.requestId, result }));
+                        sendMessage(this.ws, { type: 'result', requestId: msg.requestId, result });
                     })
                     .catch((err) => {
                         log(`[agent] callTool rejected — tool="${msg.tool}" requestId=${msg.requestId}: ${err}`);
-                        this.ws?.send(JSON.stringify({ type: 'error', requestId: msg.requestId, message: String(err) }));
+                        sendMessage(this.ws, { type: 'error', requestId: msg.requestId, message: String(err) });
                     });
                 break;
             case 'ping':
-                this.ws?.send(JSON.stringify({ type: 'pong' }));
+                sendMessage(this.ws, { type: 'pong' });
                 break;
         }
     }
 
     stop(): void {
         this.intentionallyStopped = true;
+        this.isReconnecting = false;
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
         }
-        if (this.ws) {
-            this.ws.close();
-            this.ws = null;
-        }
+        replaceSocket(this.ws);
+        this.ws = null;
         this.wsUrl = null;
     }
 
@@ -536,9 +580,85 @@ export class ServerlessServer {
 
     async callTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
         log(`[agent] callTool start: name="${name}"`);
-        const text = (s: string): ToolResult => ({ content: [{ type: 'text', text: s }] });
+        const started = Date.now();
+        try {
+            const result = await this.invokeTool(name, args);
+            const raw = result.content?.[0]?.text ?? '';
+            const preview = raw.replace(/\s+/g, ' ').slice(0, 160);
+            log(
+                `[agent] callTool done: name="${name}" durationMs=${Date.now() - started}` +
+                (preview ? ` preview="${preview}${raw.length > 160 ? '…' : ''}"` : '')
+            );
+            return result;
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            log(`[agent] callTool done: name="${name}" durationMs=${Date.now() - started} error=${message}`);
+            // Return as tool text so hub/MCP clients surface the message instead of
+            // a JSON-RPC error wrapped as ExceptionGroup / TaskGroup junk.
+            return { content: [{ type: 'text', text: message }], isError: true };
+        }
+    }
+
+    /**
+     * Resolve a terminal_name to its engine. The name must be registered
+     * (created via terminal_create); otherwise an error lists the registered names.
+     * Returns undefined when no terminal_name is given (caller auto-creates).
+     */
+    private resolveTerminalEngine(name: string | undefined): 'pty' | 'shell' | undefined {
+        if (!name) return undefined;
+        if (this.ptyManager.hasTerminal(name)) return 'pty';
+        if (this.terminalManager.hasTerminal(name)) return 'shell';
+        const terminals = this.listManagedTerminals();
+        const open = terminals.map((t) => `"${t.name}"`).join(', ') || 'none';
+        throw new Error(
+            `Terminal "${name}" is not registered. Create it with terminal_create first. Registered: ${open}`
+        );
+    }
+
+    /** Compute a unique terminal name from a prefix across both engines (prefix, prefix_1, prefix_2, ...). */
+    private nextUniqueName(prefix: string): string {
+        if (!this.ptyManager.hasTerminal(prefix) && !this.terminalManager.hasTerminal(prefix)) {
+            return prefix;
+        }
+        let i = 1;
+        while (this.ptyManager.hasTerminal(`${prefix}_${i}`) || this.terminalManager.hasTerminal(`${prefix}_${i}`)) {
+            i++;
+        }
+        return `${prefix}_${i}`;
+    }
+
+    /** List managed terminals across both engines (shell-integration + pty-fallback). */
+    private listManagedTerminals(): Array<{ id: string; name: string; isActive: boolean; hasShellIntegration: boolean; engine: 'shell-integration' | 'pty-fallback' }> {
+        const ptyTerms = this.ptyManager.listTerminals();
+        const shellTerms = this.terminalManager.listTerminals().filter(
+            (s) => !ptyTerms.some((p) => p.id === s.id)
+        );
+        return [...ptyTerms, ...shellTerms];
+    }
+
+    private async invokeTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+        const text = (s: string, isError = false): ToolResult => ({
+            content: [{ type: 'text', text: s }],
+            ...(isError ? { isError: true } : {}),
+        });
 
         switch (name) {
+            case 'get_version': {
+                const ext = vscode.extensions.getExtension('prog76.vscode-mcp-extension');
+                if (!ext) {
+                    return text('vscode-mcp extension not found.');
+                }
+                const pkgPath = path.join(ext.extensionPath, 'package.json');
+                let version = 'unknown';
+                try {
+                    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+                    version = pkg.version || 'unknown';
+                } catch {
+                    // fallback to unknown
+                }
+                return text(`vscode-mcp version: ${version}`);
+            }
+
             case 'terminal_list_sessions': {
                 log(`[agent] terminal_list_sessions: session="${this.sessionId}"`);
                 return text(`[hub] session="${this.sessionId}"`);
@@ -546,8 +666,8 @@ export class ServerlessServer {
 
             case 'terminal_list': {
                 log(`[agent] terminal_list: session="${this.sessionId}"`);
-                const terminals = this.terminalManager.listTerminals();
-                if (terminals.length === 0) return text('No terminals open.');
+                const terminals = this.listManagedTerminals();
+                if (terminals.length === 0) return text('No terminals created via terminal_create.');
                 const lines = terminals.map(
                     (t) =>
                         `[${t.id}] "${t.name}"${t.isActive ? ' (active)' : ''}${t.hasShellIntegration ? ' [shell-integration]' : ' [no shell-integration]'}`
@@ -559,10 +679,12 @@ export class ServerlessServer {
                 log(`[agent] terminal_run: command="${args.command}" session="${this.sessionId}"`);
                 const command = args.command as string;
                 const terminalName = args.terminal_name as string | undefined;
+                const engine = this.resolveTerminalEngine(terminalName);
                 const wait = (args.wait as boolean | undefined) ?? true;
-                const timeoutMs = (args.timeout_ms as number | undefined) ?? 300_000;
+                const timeoutMs =
+                    (args.timeout_ms as number | undefined) ?? getTerminalRunTimeoutMs();
                 const stdin = args.stdin as string | undefined;
-                if (this.usePtyFallback()) {
+                if (engine === 'pty') {
                     if (!wait) {
                         const result = await this.ptyManager.startBackgroundExecution(command, terminalName);
                         return text(result.message);
@@ -585,12 +707,13 @@ export class ServerlessServer {
             }
 
             case 'terminal_create': {
-                log(`[agent] terminal_create: name="${args.name}" session="${this.sessionId}"`);
-                const name = args.name as string;
+                log(`[agent] terminal_create: name_prefix="${args.name_prefix}" session="${this.sessionId}"`);
+                const prefix = args.name_prefix as string;
                 const cwd = args.cwd as string | undefined;
                 const engine = args.engine as 'auto' | 'shell' | 'pty' | undefined;
                 const shell = args.shell as string | undefined;
                 const usePty = engine === 'pty' || (engine === 'auto' && this.usePtyFallback());
+                const name = this.nextUniqueName(prefix);
                 let result: { terminalName: string; engine: 'shell-integration' | 'pty-fallback' };
                 if (usePty) {
                     result = this.ptyManager.createTerminal(name, cwd, shell);
@@ -607,8 +730,9 @@ export class ServerlessServer {
                     .replace(/\\x04/g, '\x04')
                     .replace(/\\n/g, '\n');
                 const terminalName = args.terminal_name as string | undefined;
+                const engine = this.resolveTerminalEngine(terminalName);
                 const addNewline = (args.add_newline as boolean | undefined) ?? true;
-                if (this.usePtyFallback()) {
+                if (engine === 'pty') {
                     this.ptyManager.sendText(processed, terminalName, addNewline);
                 } else {
                     this.terminalManager.sendText(processed, terminalName, addNewline);
@@ -618,8 +742,9 @@ export class ServerlessServer {
 
             case 'terminal_read_output': {
                 const terminalName = args.terminal_name as string | undefined;
+                const engine = this.resolveTerminalEngine(terminalName);
                 const lines = args.lines as number | undefined;
-                if (this.usePtyFallback()) {
+                if (engine === 'pty') {
                     return text(this.ptyManager.readOutput(terminalName, lines));
                 }
                 return text(this.terminalManager.readOutput(terminalName, lines));
@@ -627,7 +752,8 @@ export class ServerlessServer {
 
             case 'terminal_clear_buffer': {
                 const terminalName = args.terminal_name as string | undefined;
-                if (this.usePtyFallback()) {
+                const engine = this.resolveTerminalEngine(terminalName);
+                if (engine === 'pty') {
                     this.ptyManager.clearBuffer(terminalName);
                 } else {
                     this.terminalManager.clearBuffer(terminalName);
@@ -636,12 +762,14 @@ export class ServerlessServer {
             }
 
             case 'terminal_wait': {
-                const terminalName = args.terminal_name as string;
+                const terminalName = args.terminal_name as string | undefined;
+                const engine = this.resolveTerminalEngine(terminalName);
                 if (!terminalName) {
                     throw new Error("terminal_wait requires 'terminal_name'.");
                 }
-                const timeoutMs = (args.timeout_ms as number | undefined) ?? 300_000;
-                if (this.usePtyFallback()) {
+                const timeoutMs =
+                    (args.timeout_ms as number | undefined) ?? getTerminalWaitTimeoutMs();
+                if (engine === 'pty') {
                     const result = await this.ptyManager.waitForExecution(terminalName, timeoutMs);
                     return text(this.formatCommandResult(result));
                 }
@@ -1253,7 +1381,6 @@ export class ServerlessServer {
             }
 
             default:
-                log(`[agent] callTool done: name="${name}" -> error: Unknown tool`);
                 throw new Error(`Unknown tool: ${name}`);
         }
     }

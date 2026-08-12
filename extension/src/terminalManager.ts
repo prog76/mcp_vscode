@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
+import { getShellReadDrainMs, getShellStartBindMs, getTerminalCreateWarmupMs } from './config';
+import { log } from './logger';
 
 export interface TerminalInfo {
-    id: number;
+    id: string;
     name: string;
     isActive: boolean;
     hasShellIntegration: boolean;
@@ -24,6 +26,13 @@ interface ExecutionState {
     endPromise: Promise<number | undefined>;
     resolveEnd: (exitCode: number | undefined) => void;
     finishedAt?: number;
+    isOwn: boolean;
+}
+
+interface PendingOwn {
+    state: ExecutionState;
+    returnedExecution: vscode.TerminalShellExecution;
+    resolveBound: (execution: vscode.TerminalShellExecution) => void;
 }
 
 interface RecentResult {
@@ -93,7 +102,10 @@ export class TerminalManager {
     private maxBufferLines: number;
     private ownExecutions = new Set<vscode.TerminalShellExecution>();
     private activeExecutions = new Map<string, ExecutionState>();
+    private pendingOwnByTerminal = new Map<string, PendingOwn>();
     private recentResults = new Map<string, RecentResult>();
+    /** Registry of terminal names created via terminal_create (name -> name). */
+    private managedTerminals = new Map<string, string>();
 
     constructor(maxBufferLines: number) {
         this.maxBufferLines = maxBufferLines;
@@ -110,7 +122,8 @@ export class TerminalManager {
 
     private registerExecution(
         e: { terminal: vscode.Terminal; execution: vscode.TerminalShellExecution },
-        commandLine: string
+        commandLine: string,
+        isOwn: boolean
     ): ExecutionState {
         let resolveEnd!: (exitCode: number | undefined) => void;
         const endPromise = new Promise<number | undefined>((resolve) => { resolveEnd = resolve; });
@@ -123,6 +136,7 @@ export class TerminalManager {
             deliveredLength: 0,
             endPromise,
             resolveEnd,
+            isOwn,
         };
         this.activeExecutions.set(e.terminal.name, state);
         return state;
@@ -131,11 +145,37 @@ export class TerminalManager {
     private setupListeners(): void {
         this.disposables.push(
             vscode.window.onDidStartTerminalShellExecution(async (e) => {
+                const pending = this.pendingOwnByTerminal.get(e.terminal.name);
+                if (pending) {
+                    const from = pending.returnedExecution;
+                    pending.state.execution = e.execution;
+                    this.ownExecutions.add(e.execution);
+                    this.pendingOwnByTerminal.delete(e.terminal.name);
+                    log(
+                        `[terminal] rebind start terminal="${e.terminal.name}" ` +
+                        `returned!==event=${from !== e.execution}`
+                    );
+                    pending.resolveBound(e.execution);
+                    return;
+                }
+
                 if (this.ownExecutions.has(e.execution)) {
                     return;
                 }
+
+                const active = this.activeExecutions.get(e.terminal.name);
+                if (active?.isOwn) {
+                    // In-flight own command: adopt event execution, never overwrite with foreign tracking.
+                    active.execution = e.execution;
+                    this.ownExecutions.add(e.execution);
+                    log(
+                        `[terminal] rebind active own terminal="${e.terminal.name}" via onDidStart`
+                    );
+                    return;
+                }
+
                 const commandLine = e.execution.commandLine?.value ?? '<user-typed command>';
-                const state = this.registerExecution(e, commandLine);
+                const state = this.registerExecution(e, commandLine, false);
                 const buf = this.getBuffer(e.terminal);
                 for await (const chunk of e.execution.read()) {
                     buf.append(chunk);
@@ -147,7 +187,19 @@ export class TerminalManager {
         this.disposables.push(
             vscode.window.onDidEndTerminalShellExecution((e) => {
                 const state = this.activeExecutions.get(e.terminal.name);
-                if (!state || state.execution !== e.execution) return;
+                if (!state || state.execution !== e.execution) {
+                    log(
+                        `[terminal] onDidEnd ignored terminal="${e.terminal.name}" ` +
+                        `exitCode=${e.exitCode} reason=${!state ? 'no-active' : 'execution-mismatch'}`
+                    );
+                    return;
+                }
+                const elapsedMs = Date.now() - state.startedAt;
+                log(
+                    `[terminal] onDidEnd terminal="${e.terminal.name}" exitCode=${e.exitCode} ` +
+                    `elapsedMs=${elapsedMs} outputChars=${state.output.length} ` +
+                    `own=${state.isOwn}`
+                );
                 this.activeExecutions.delete(e.terminal.name);
                 state.resolveEnd(e.exitCode);
                 const finishedAt = Date.now();
@@ -171,25 +223,34 @@ export class TerminalManager {
             vscode.window.onDidCloseTerminal((terminal) => {
                 this.outputBuffers.get(terminal.name)?.flush();
                 this.outputBuffers.delete(terminal.name);
+                this.pendingOwnByTerminal.delete(terminal.name);
                 const state = this.activeExecutions.get(terminal.name);
                 if (state) {
                     this.activeExecutions.delete(terminal.name);
                     state.resolveEnd(undefined);
                 }
                 this.recentResults.delete(terminal.name);
+                this.managedTerminals.delete(terminal.name);
             })
         );
     }
 
+    /** Whether a terminal with this name is registered (created via terminal_create). */
+    hasTerminal(name: string): boolean {
+        return this.managedTerminals.has(name);
+    }
+
     listTerminals(): TerminalInfo[] {
         const active = vscode.window.activeTerminal;
-        return vscode.window.terminals.map((t, i) => ({
-            id: i,
-            name: t.name,
-            isActive: t === active,
-            hasShellIntegration: !!t.shellIntegration,
-            engine: t.shellIntegration ? 'shell-integration' : 'pty-fallback',
-        }));
+        return vscode.window.terminals
+            .filter((t) => this.managedTerminals.has(t.name))
+            .map((t) => ({
+                id: t.name,
+                name: t.name,
+                isActive: t === active,
+                hasShellIntegration: !!t.shellIntegration,
+                engine: t.shellIntegration ? 'shell-integration' : 'pty-fallback',
+            }));
     }
 
     getOrCreateTerminal(name?: string): vscode.Terminal {
@@ -260,26 +321,116 @@ export class TerminalManager {
         );
     }
 
+    /**
+     * On remote SSH, shellIntegration.executeCommand() may return object A while
+     * onDidStart/onDidEnd use object B. Wait for the start event and rebind before read().
+     */
+    private async bindOwnExecution(
+        terminal: vscode.Terminal,
+        command: string
+    ): Promise<{ state: ExecutionState; execution: vscode.TerminalShellExecution; returnedExecution: vscode.TerminalShellExecution }> {
+        let resolveEnd!: (exitCode: number | undefined) => void;
+        const endPromise = new Promise<number | undefined>((resolve) => { resolveEnd = resolve; });
+
+        // Register active+pending BEFORE executeCommand so onDidStart cannot miss us
+        // or overwrite with a foreign tracker.
+        const state: ExecutionState = {
+            execution: null as unknown as vscode.TerminalShellExecution,
+            terminalName: terminal.name,
+            commandLine: command,
+            startedAt: Date.now(),
+            output: '',
+            deliveredLength: 0,
+            endPromise,
+            resolveEnd,
+            isOwn: true,
+        };
+        this.activeExecutions.set(terminal.name, state);
+
+        let resolveBound!: (execution: vscode.TerminalShellExecution) => void;
+        const boundPromise = new Promise<vscode.TerminalShellExecution>((resolve) => {
+            resolveBound = resolve;
+        });
+        const pending: PendingOwn = {
+            state,
+            returnedExecution: null as unknown as vscode.TerminalShellExecution,
+            resolveBound,
+        };
+        this.pendingOwnByTerminal.set(terminal.name, pending);
+
+        const returnedExecution = terminal.shellIntegration!.executeCommand(command);
+        pending.returnedExecution = returnedExecution;
+        if (!state.execution) {
+            state.execution = returnedExecution;
+        }
+        this.ownExecutions.add(returnedExecution);
+
+        const bindMs = getShellStartBindMs();
+        const execution = await Promise.race([
+            boundPromise,
+            new Promise<vscode.TerminalShellExecution>((resolve) => {
+                setTimeout(() => {
+                    if (this.pendingOwnByTerminal.get(terminal.name) === pending) {
+                        this.pendingOwnByTerminal.delete(terminal.name);
+                        log(
+                            `[terminal] shell start bind timeout terminal="${terminal.name}" ` +
+                            `bindMs=${bindMs} — using returned execution`
+                        );
+                        resolve(state.execution || returnedExecution);
+                    }
+                }, bindMs);
+            }),
+        ]);
+
+        state.execution = execution;
+        this.ownExecutions.add(execution);
+        if (execution !== returnedExecution) {
+            log(`[terminal] bound to start-event execution terminal="${terminal.name}"`);
+        }
+
+        return { state, execution, returnedExecution };
+    }
+
+    private clearOwnMarkers(
+        returnedExecution: vscode.TerminalShellExecution,
+        execution: vscode.TerminalShellExecution
+    ): void {
+        this.ownExecutions.delete(returnedExecution);
+        this.ownExecutions.delete(execution);
+    }
+
     async executeCommand(
         command: string,
-        terminalName?: string,
-        timeoutMs = 300_000,
+        terminalName: string | undefined,
+        timeoutMs: number,
         onChunk?: (chunk: string) => void
     ): Promise<CommandResult> {
         const terminal = this.getOrCreateTerminal(terminalName);
 
         const existing = this.activeExecutions.get(terminal.name);
         if (existing) {
+            log(
+                `[terminal] executeCommand busy terminal="${terminal.name}" ` +
+                `running="${existing.commandLine.slice(0, 80)}" elapsedMs=${Date.now() - existing.startedAt}`
+            );
             throw this.busyError(terminal.name, existing);
+        }
+        if (this.pendingOwnByTerminal.has(terminal.name)) {
+            throw new Error(
+                `Terminal '${terminal.name}' is busy starting a command. ` +
+                `Use terminal_wait or target a different terminal.`
+            );
         }
 
         terminal.show(true);
 
         if (!terminal.shellIntegration) {
+            log(`[terminal] executeCommand waiting for shellIntegration terminal="${terminal.name}"`);
             await this.waitForShellIntegration(terminal, 8000);
         }
 
         if (!terminal.shellIntegration) {
+            log(`[terminal] executeCommand no shellIntegration — sendText fallback terminal="${terminal.name}"`);
             terminal.sendText(command);
             return {
                 output:
@@ -291,11 +442,12 @@ export class TerminalManager {
             };
         }
 
-        const execution = terminal.shellIntegration.executeCommand(command);
-        this.ownExecutions.add(execution);
+        log(
+            `[terminal] executeCommand start terminal="${terminal.name}" timeoutMs=${timeoutMs} ` +
+            `command="${command.slice(0, 120)}${command.length > 120 ? '…' : ''}"`
+        );
 
-        const state = this.registerExecution({ terminal, execution }, command);
-
+        const { state, execution, returnedExecution } = await this.bindOwnExecution(terminal, command);
         const buf = this.getBuffer(terminal);
 
         const readPromise = (async () => {
@@ -304,10 +456,14 @@ export class TerminalManager {
                 buf.append(chunk);
                 if (onChunk) onChunk(chunk);
             }
+            log(
+                `[terminal] execution.read() closed terminal="${terminal.name}" ` +
+                `outputChars=${state.output.length} elapsedMs=${Date.now() - state.startedAt}`
+            );
         })();
-        // Attach a no-op handler so a mid-iteration rejection doesn't surface as
-        // UnhandledPromiseRejection if we return via the timeout path before `await`ing this.
-        readPromise.catch(() => { });
+        readPromise.catch((err) => {
+            log(`[terminal] execution.read() error terminal="${terminal.name}": ${err}`);
+        });
 
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
         const timeoutPromise = new Promise<'timeout'>((resolve) => {
@@ -315,47 +471,69 @@ export class TerminalManager {
         });
 
         const outcome = await Promise.race([
-            readPromise.then(() => 'done' as const),
+            readPromise.then(() => 'read_done' as const),
+            state.endPromise.then(() => 'shell_end' as const),
             timeoutPromise,
         ]);
 
         if (timeoutHandle) clearTimeout(timeoutHandle);
+        this.clearOwnMarkers(returnedExecution, execution);
 
-        this.ownExecutions.delete(execution);
-
-        if (outcome === 'done') {
-            const exitCode = await Promise.race([
-                state.endPromise,
-                new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), END_EVENT_WAIT_MS)),
-            ]);
+        if (outcome === 'timeout') {
+            log(
+                `[terminal] executeCommand timeout terminal="${terminal.name}" ` +
+                `timeoutMs=${timeoutMs} outputChars=${state.output.length}`
+            );
             const slice = state.output.slice(state.deliveredLength);
             state.deliveredLength = state.output.length;
-            const recent = this.recentResults.get(terminal.name);
-            if (recent && state.finishedAt !== undefined && recent.finishedAt === state.finishedAt) {
-                this.recentResults.set(terminal.name, {
-                    undeliveredOutput: '',
-                    exitCode: recent.exitCode,
-                    finishedAt: recent.finishedAt,
-                });
-            }
+            const cleaned = cleanShellOutput(slice);
+            const body = cleaned || '(no output yet)';
             return {
-                output: cleanShellOutput(slice) || '(no output)',
-                exitCode,
-                timedOut: false,
+                output:
+                    `${body}\n\n[STILL RUNNING — ${Math.round(timeoutMs / 1000)}s elapsed, no exit yet. ` +
+                    `Call terminal_wait (terminal_name='${terminal.name}') to continue waiting, ` +
+                    `or send '\\x03' via terminal_send_text to abort.]`,
+                exitCode: undefined,
+                timedOut: true,
             };
         }
 
+        if (outcome === 'shell_end') {
+            const drainMs = getShellReadDrainMs();
+            log(
+                `[terminal] executeCommand shell_end before read() closed terminal="${terminal.name}" ` +
+                `drainMs=${drainMs} outputChars=${state.output.length}`
+            );
+            if (drainMs > 0) {
+                await Promise.race([
+                    readPromise,
+                    new Promise<void>((resolve) => setTimeout(resolve, drainMs)),
+                ]);
+            }
+        }
+
+        const exitCode = await Promise.race([
+            state.endPromise,
+            new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), END_EVENT_WAIT_MS)),
+        ]);
         const slice = state.output.slice(state.deliveredLength);
         state.deliveredLength = state.output.length;
-        const cleaned = cleanShellOutput(slice);
-        const body = cleaned || '(no output yet)';
+        const recent = this.recentResults.get(terminal.name);
+        if (recent && state.finishedAt !== undefined && recent.finishedAt === state.finishedAt) {
+            this.recentResults.set(terminal.name, {
+                undeliveredOutput: '',
+                exitCode: recent.exitCode,
+                finishedAt: recent.finishedAt,
+            });
+        }
+        log(
+            `[terminal] executeCommand done terminal="${terminal.name}" via=${outcome} ` +
+            `exitCode=${exitCode} outputChars=${slice.length} elapsedMs=${Date.now() - state.startedAt}`
+        );
         return {
-            output:
-                `${body}\n\n[STILL RUNNING — ${Math.round(timeoutMs / 1000)}s elapsed, no exit yet. ` +
-                `Call terminal_wait (terminal_name='${terminal.name}') to continue waiting, ` +
-                `or send '\\x03' via terminal_send_text to abort.]`,
-            exitCode: undefined,
-            timedOut: true,
+            output: cleanShellOutput(slice) || '(no output)',
+            exitCode,
+            timedOut: false,
         };
     }
 
@@ -368,6 +546,12 @@ export class TerminalManager {
         const existing = this.activeExecutions.get(terminal.name);
         if (existing) {
             throw this.busyError(terminal.name, existing);
+        }
+        if (this.pendingOwnByTerminal.has(terminal.name)) {
+            throw new Error(
+                `Terminal '${terminal.name}' is busy starting a command. ` +
+                `Use terminal_wait or target a different terminal.`
+            );
         }
 
         terminal.show(true);
@@ -387,9 +571,7 @@ export class TerminalManager {
             };
         }
 
-        const execution = terminal.shellIntegration.executeCommand(command);
-        this.ownExecutions.add(execution);
-        const state = this.registerExecution({ terminal, execution }, command);
+        const { state, execution, returnedExecution } = await this.bindOwnExecution(terminal, command);
         const buf = this.getBuffer(terminal);
 
         (async () => {
@@ -399,7 +581,7 @@ export class TerminalManager {
                     buf.append(chunk);
                 }
             } finally {
-                this.ownExecutions.delete(execution);
+                this.clearOwnMarkers(returnedExecution, execution);
             }
         })().catch(() => { });
 
@@ -413,7 +595,7 @@ export class TerminalManager {
 
     async waitForExecution(
         terminalName: string,
-        timeoutMs = 300_000
+        timeoutMs: number
     ): Promise<CommandResult & { fromCache?: boolean; cacheAgeMs?: number }> {
         const state = this.activeExecutions.get(terminalName);
         if (state) {
@@ -484,9 +666,31 @@ export class TerminalManager {
         };
         const terminal = vscode.window.createTerminal(options);
         terminal.show(true);
+        // On remote SSH the shell-integration execution read stream can be
+        // silent for the very first command on a freshly created terminal.
+        // Run a no-op warmup to force the read stream to wire up before we
+        // return control to the caller.
+        if (terminal.shellIntegration) {
+            const warmupMs = getTerminalCreateWarmupMs();
+            if (warmupMs > 0) {
+                try {
+                    const warmup = terminal.shellIntegration.executeCommand('true');
+                    await Promise.race([
+                        (async () => {
+                            for await (const _ of warmup.read()) { /* drain */ }
+                            return 'done' as const;
+                        })(),
+                        new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), warmupMs)),
+                    ]);
+                } catch {
+                    // warmup is best-effort; ignore and continue
+                }
+            }
+        }
         if (!terminal.shellIntegration) {
             await this.waitForShellIntegration(terminal, 8000);
         }
+        this.managedTerminals.set(terminal.name, terminal.name);
         return { terminalName: terminal.name, engine: terminal.shellIntegration ? 'shell-integration' : 'pty-fallback' };
     }
 
@@ -552,6 +756,7 @@ export class TerminalManager {
     dispose(): void {
         this.disposables.forEach((d) => d.dispose());
         this.outputBuffers.clear();
+        this.pendingOwnByTerminal.clear();
     }
 }
 

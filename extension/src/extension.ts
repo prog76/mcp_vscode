@@ -3,6 +3,7 @@ import { TerminalManager } from './terminalManager';
 import { PtyTerminalManager } from './ptyTerminalManager';
 import { ServerlessServer } from './serverlessServer';
 import { HubServer } from './hubServer';
+import { CONFIG_DEFAULTS, getSatelliteTimeoutMs } from './config';
 import { initLogger, log } from './logger';
 
 let workspace: string;
@@ -16,6 +17,8 @@ let agentServer: ServerlessServer | undefined;
 let hubServer: HubServer | undefined;
 let healthCheckTimer: NodeJS.Timeout | null = null;
 let reconnectTimer: NodeJS.Timeout | null = null;
+let reconnectInFlight = false;
+let hubLostRegistered = false;
 
 type ConnectionState = 'connecting' | 'connected' | 'disconnected';
 let state: ConnectionState = 'disconnected';
@@ -37,12 +40,12 @@ export async function activate(context: vscode.ExtensionContext) {
   const config = vscode.workspace.getConfiguration('vscode-mcp');
   mode = config.get<'auto' | 'client-only'>('mode', 'auto');
   terminalEngine = config.get<'auto' | 'force-fallback'>('terminalEngine', 'auto');
-  host = config.get<string>('host', '127.0.0.1');
-  port = config.get<number>('port', 27681);
+  host = config.get<string>('host', CONFIG_DEFAULTS.host);
+  port = config.get<number>('port', CONFIG_DEFAULTS.port);
 
-  terminalManager = new TerminalManager(config.get<number>('outputBufferLines', 2000));
+  terminalManager = new TerminalManager(config.get<number>('outputBufferLines', CONFIG_DEFAULTS.outputBufferLines));
   ptyManager = new PtyTerminalManager();
-  satelliteTimeoutMs = config.get<number>('satelliteTimeoutMs', 120000);
+  satelliteTimeoutMs = getSatelliteTimeoutMs();
 
   statusBar = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Right,
@@ -102,7 +105,7 @@ export async function activate(context: vscode.ExtensionContext) {
         case 'list-terminals':
           const terminalList = terminalManager?.listTerminals() ?? [];
           const message = terminalList.length > 0
-            ? terminalList.map(t => `[${t.id}] "${t.name}"${t.hasShellIntegration ? ' [shell-integration]' : ' [no shell-integration]'}`).join('\n')
+            ? terminalList.map(t => `"${t.name}"${t.hasShellIntegration ? ' [shell-integration]' : ' [no shell-integration]'}`).join('\n')
             : 'No active terminals';
           vscode.window.showInformationMessage(`Active terminals:\n${message}`);
           break;
@@ -128,7 +131,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('vscode-mcp.listTerminals', async () => {
       const terminalList = terminalManager?.listTerminals() ?? [];
       const message = terminalList.length > 0
-        ? terminalList.map(t => `[${t.id}] "${t.name}"${t.hasShellIntegration ? ' [shell-integration]' : ' [no shell-integration]'}`).join('\n')
+        ? terminalList.map(t => `"${t.name}"${t.hasShellIntegration ? ' [shell-integration]' : ' [no shell-integration]'}`).join('\n')
         : 'No active terminals';
       vscode.window.showInformationMessage(`Active terminals:\n${message}`);
     })
@@ -145,18 +148,27 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 async function retryConnection(): Promise<void> {
+  if (reconnectInFlight) {
+    log('retryConnection already in flight, skipping');
+    return;
+  }
+  reconnectInFlight = true;
   stopReconnectTimer();
   setState('connecting');
   let delay = 1000;
-  while (state === 'connecting') {
-    try {
-      await tryConnect();
-      return;
-    } catch (e) {
-      log(`Connection attempt failed: ${e}`);
-      await new Promise((r) => setTimeout(r, delay));
-      delay = Math.min(delay * 2, 30000);
+  try {
+    while (state === 'connecting') {
+      try {
+        await tryConnect();
+        return;
+      } catch (e) {
+        log(`Connection attempt failed: ${e}`);
+        await new Promise((r) => setTimeout(r, delay));
+        delay = Math.min(delay * 2, 30000);
+      }
     }
+  } finally {
+    reconnectInFlight = false;
   }
 }
 
@@ -204,7 +216,7 @@ async function becomeHub(): Promise<void> {
   if (!agentServer) return;
   // Stop any satellite connection first so we don't reconnect to the hub we're about to become.
   agentServer.stop();
-  const rawVersion = vscode.extensions.getExtension('picoclaw.vscode-mcp-extension')?.packageJSON.version;
+  const rawVersion = vscode.extensions.getExtension('prog76.vscode-mcp-extension')?.packageJSON.version;
   const extensionVersion = typeof rawVersion === 'number' ? String(rawVersion) : (rawVersion || 'unknown');
   hubServer = new HubServer(agentServer, workspace, extensionVersion, port, host, satelliteTimeoutMs);
   hubServer.onEvent((event) => {
@@ -232,13 +244,16 @@ async function becomeHub(): Promise<void> {
 async function connectAsSatellite(): Promise<void> {
   if (!agentServer) return;
   const wsUrl = `ws://${host}:${port}/ws`;
-  agentServer.onHubLost(() => {
-    log('Hub lost callback triggered');
-    stopHealthCheck();
-    setState('connecting');
-    vscode.window.showWarningMessage('VS Code MCP: Hub lost, attempting to reconnect...');
-    retryConnection();
-  });
+  if (!hubLostRegistered) {
+    hubLostRegistered = true;
+    agentServer.onHubLost(() => {
+      log('Hub lost callback triggered');
+      stopHealthCheck();
+      setState('connecting');
+      vscode.window.showWarningMessage('VS Code MCP: Hub lost, attempting to reconnect...');
+      retryConnection();
+    });
+  }
   await agentServer.connectAsSatellite(wsUrl);
   setState('connected');
   log(`Connected as satellite to hub at ws://${host}:${port}`);
@@ -258,6 +273,7 @@ async function disconnect(): Promise<void> {
   setState('disconnected');
   stopHealthCheck();
   stopReconnectTimer();
+  reconnectInFlight = false;
   await hubServer?.stop();
   agentServer?.stop();
   hubServer = undefined;
@@ -287,7 +303,7 @@ function startHealthCheck(): void {
         stopHealthCheck();
         setState('connecting');
         vscode.window.showWarningMessage('VS Code MCP: Hub unreachable, reconnecting...');
-        retryConnection();
+        void retryConnection();
       }
     }
   }, 10000);

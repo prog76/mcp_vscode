@@ -2,11 +2,11 @@
   "name": "vscode-mcp-extension",
   "displayName": "VS Code MCP Extension",
   "description": "VS Code extension that exposes terminals via MCP protocol",
-  "version": "1.0.51",
-  "publisher": "picoclaw",
+  "version": "1.0.66",
+  "publisher": "prog76",
   "icon": "icon.png",
   "engines": {
-    "vscode": "^1.74.0"
+    "vscode": "^1.93.0"
   },
   "categories": [
     "Other"
@@ -113,10 +113,45 @@
         },
         "vscode-mcp.satelliteTimeoutMs": {
           "type": "number",
-          "default": 120000,
+          "default": 300000,
           "minimum": 10000,
-          "maximum": 600000,
-          "description": "Timeout in milliseconds for waiting on a satellite (remote VS Code window) to respond to a tool call. Default 120000 (2 min)."
+          "maximum": 3600000,
+          "description": "Timeout in milliseconds for waiting on a satellite (remote VS Code window) to respond to a tool call. Default matches terminalRunTimeoutMs (300000 = 5 min). Hub also uses max(this, timeout_ms) for terminal_run/terminal_wait."
+        },
+        "vscode-mcp.terminalRunTimeoutMs": {
+          "type": "number",
+          "default": 300000,
+          "minimum": 1000,
+          "maximum": 3600000,
+          "description": "Default hard wait (ms) for terminal_run when timeout_ms is omitted. On expiry the command keeps running and the tool returns [STILL RUNNING]; call terminal_wait to continue. Default 300000 (5 min)."
+        },
+        "vscode-mcp.terminalWaitTimeoutMs": {
+          "type": "number",
+          "default": 300000,
+          "minimum": 1000,
+          "maximum": 3600000,
+          "description": "Default max block (ms) for terminal_wait when timeout_ms is omitted. On expiry returns [STILL RUNNING]; call again or abort with terminal_send_text. Default 300000 (5 min)."
+        },
+        "vscode-mcp.shellReadDrainMs": {
+          "type": "number",
+          "default": 500,
+          "minimum": 0,
+          "maximum": 10000,
+          "description": "After shell-integration end event, max ms to wait for execution.read() to finish draining output before returning. Remote SSH often ends the command while read() stays open; without this drain, terminal_run hangs until timeout_ms. Default 500."
+        },
+        "vscode-mcp.shellStartBindMs": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 100,
+          "maximum": 60000,
+          "description": "Max ms to wait for onDidStartTerminalShellExecution after executeCommand so we can rebind to the event execution object (required on remote SSH where returned execution !== event execution). Default 5000."
+        },
+        "vscode-mcp.terminalCreateWarmupMs": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 0,
+          "maximum": 30000,
+          "description": "After terminal_create, wait this long (ms) before returning so shell integration is ready for the first command on remote SSH. Default 5000."
         }
       }
     }
@@ -128,7 +163,7 @@
   },
   "devDependencies": {
     "@types/node": "^18.19.130",
-    "@types/vscode": "^1.74.0",
+    "@types/vscode": "^1.93.0",
     "@types/ws": "^8.18.1",
     "typescript": "^5.0.0"
   },
