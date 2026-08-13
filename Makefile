@@ -6,14 +6,14 @@ help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 #doesn't work
-# install: ## Install all dependencies (npm and Python), build, install VSIX, and reload extension host
-# 	@echo "Building and installing extension..."
-# 	@$(MAKE) build
-# 	@vsix=$$(ls -t extension/*.vsix | head -1); \
-# 		echo "Installing $$vsix..."; \
-# 		code --force --install-extension "$$vsix" 2>&1; \
-# 		echo "Reloading extension host..."; \
-# 		pkill -f "bootstrap-fork.*--type=extensionHost"
+install: ## Install all dependencies (npm and Python), build, install VSIX, and reload extension host
+	@echo "Building and installing extension..."
+	@$(MAKE) build
+	@vsix=$$(ls -t extension/*.vsix | head -1); \
+		echo "Installing $$vsix..."; \
+		code --force --install-extension "$$vsix" 2>&1; \
+		echo "Reloading extension host..."; \
+		pkill -f "bootstrap-fork.*--type=extensionHost"
 
 build: ## Build with auto-incremented version (patch)
 	@echo "Auto-incrementing version..."

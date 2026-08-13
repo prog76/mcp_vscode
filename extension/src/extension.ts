@@ -31,7 +31,9 @@ let port: number;
 let satelliteTimeoutMs: number;
 
 export async function activate(context: vscode.ExtensionContext) {
-  log('Extension activating');
+  const rawVersion = vscode.extensions.getExtension('prog76.vscode-mcp-extension')?.packageJSON.version;
+  const extensionVersion = typeof rawVersion === 'number' ? String(rawVersion) : (rawVersion || 'unknown');
+  log(`Extension activating (v${extensionVersion})`);
 
   workspace = vscode.workspace.name ||
     vscode.workspace.workspaceFolders?.[0]?.name ||
@@ -47,12 +49,33 @@ export async function activate(context: vscode.ExtensionContext) {
   ptyManager = new PtyTerminalManager();
   satelliteTimeoutMs = getSatelliteTimeoutMs();
 
+  // Align LEFT (priority 3000). The right side of the status bar is heavily
+  // crowded (GitLens, Claude Dev/Cline, Quick Command Buttons, Action Buttons,
+  // plus VS Code built-ins like the remote indicator, bell, and language), so a
+  // right-aligned item gets dropped when space runs out even at priority 3000.
+  // The left side is almost always empty, guaranteeing the icon is visible.
   statusBar = vscode.window.createStatusBarItem(
-    vscode.StatusBarAlignment.Right,
-    100
+    vscode.StatusBarAlignment.Left,
+    3000
   );
   context.subscriptions.push(statusBar);
   statusBar.command = 'vscode-mcp.statusBarClick';
+
+  // Defensive: re-show after activation so a transient hide during the
+  // connection flow can't leave the icon permanently hidden.
+  setTimeout(() => {
+    if (statusBar) statusBar.show();
+  }, 1000);
+
+  // Re-evaluate visibility whenever settings change (e.g. toggling vscode-mcp.showStatus)
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('vscode-mcp')) {
+        updateStatusBar();
+      }
+    })
+  );
+
   updateStatusBar();
   statusBar.show();
 
@@ -134,6 +157,18 @@ export async function activate(context: vscode.ExtensionContext) {
         ? terminalList.map(t => `"${t.name}"${t.hasShellIntegration ? ' [shell-integration]' : ' [no shell-integration]'}`).join('\n')
         : 'No active terminals';
       vscode.window.showInformationMessage(`Active terminals:\n${message}`);
+    }),
+    vscode.commands.registerCommand('vscode-mcp.forceShowStatusBar', () => {
+      if (!statusBar) {
+        statusBar = vscode.window.createStatusBarItem(
+          vscode.StatusBarAlignment.Left,
+          3000
+        );
+        statusBar.command = 'vscode-mcp.statusBarClick';
+      }
+      updateStatusBar();
+      statusBar.show();
+      vscode.window.showInformationMessage('VS Code MCP: Status bar item shown.');
     })
   );
 
@@ -327,6 +362,7 @@ function updateStatusBar() {
   if (!statusBar) return;
   const config = vscode.workspace.getConfiguration('vscode-mcp');
   const showStatus = config.get<boolean>('showStatus', true);
+  log(`updateStatusBar: showStatus=${showStatus} state=${state} hub=${hubServer ? 'yes' : 'no'}`);
   if (!showStatus) { statusBar.hide(); return; }
   statusBar.show();
 

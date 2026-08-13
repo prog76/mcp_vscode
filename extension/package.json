@@ -2,7 +2,7 @@
   "name": "vscode-mcp-extension",
   "displayName": "VS Code MCP Extension",
   "description": "VS Code extension that exposes terminals via MCP protocol",
-  "version": "1.0.66",
+  "version": "1.0.68",
   "publisher": "prog76",
   "icon": "icon.png",
   "engines": {
@@ -37,6 +37,10 @@
       {
         "command": "vscode-mcp.listTerminals",
         "title": "List Managed Terminals"
+      },
+      {
+        "command": "vscode-mcp.forceShowStatusBar",
+        "title": "Force Show VS Code MCP Status Bar Icon"
       }
     ],
     "menus": {
@@ -66,6 +70,10 @@
         },
         {
           "command": "vscode-mcp.listTerminals",
+          "when": "true"
+        },
+        {
+          "command": "vscode-mcp.forceShowStatusBar",
           "when": "true"
         }
       ]
