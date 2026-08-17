@@ -14,6 +14,14 @@ export interface CommandResult {
     output: string;
     exitCode: number | undefined;
     timedOut: boolean;
+    /** stderr output (only populated by direct execute, not terminal-based runs) */
+    stderr?: string;
+    /** The timeout in ms that was applied (used for formatting STILL RUNNING messages) */
+    timeoutMs?: number;
+    /** Whether output was truncated due to exceeding max_output_bytes */
+    truncated?: boolean;
+    /** The max output size (bytes) that was applied */
+    maxOutputBytes?: number;
 }
 
 interface ExecutionState {

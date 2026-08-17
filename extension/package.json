@@ -160,6 +160,13 @@
           "minimum": 0,
           "maximum": 30000,
           "description": "After terminal_create, wait this long (ms) before returning so shell integration is ready for the first command on remote SSH. Default 5000."
+        },
+        "vscode-mcp.maxOutputBytes": {
+          "type": "number",
+          "default": 50000,
+          "minimum": 1024,
+          "maximum": 104857600,
+          "description": "Default max output size (bytes) for the execute tool. Output is truncated at this limit. Default 50000 (≈49 KB)."
         }
       }
     }

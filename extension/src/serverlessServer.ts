@@ -1,10 +1,11 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawn, SpawnOptions } from 'child_process';
 import WebSocket from 'ws';
 import { TerminalManager, CommandResult } from './terminalManager';
 import { PtyTerminalManager } from './ptyTerminalManager';
-import { CONFIG_DEFAULTS, getTerminalRunTimeoutMs, getTerminalWaitTimeoutMs } from './config';
+import { CONFIG_DEFAULTS, getTerminalRunTimeoutMs, getTerminalWaitTimeoutMs, getMaxOutputBytes } from './config';
 import { log } from './logger';
 import { parseWsMessage, sendMessage, replaceSocket } from './wsProtocol';
 
@@ -225,6 +226,48 @@ export const TOOLS = [
             properties: {
                 command: { type: 'string', description: 'VS Code command ID' },
                 args: { type: 'array', description: 'Optional arguments to pass to the command', items: {} },
+                session_id: { type: 'string', description: 'Target session ID (workspace name).' },
+            },
+            required: ['command'],
+        },
+    },
+    {
+        name: 'execute',
+        description:
+            'Execute a shell command directly (NOT via VS Code terminal) and capture output.\n' +
+            'Spawns a child process with stdio pipes — no terminal tab is shown. ' +
+            'stdout, stderr, and exit code are captured and returned.\n' +
+            'stdin is piped to the process if provided.\n' +
+            'Default timeout_ms = vscode-mcp.terminalRunTimeoutMs from extension settings ' +
+            `(package.json default ${CONFIG_DEFAULTS.terminalRunTimeoutMs}).\n` +
+            'On timeout: the process is killed (SIGTERM, then SIGKILL after 3s) and the response ' +
+            'includes partial output with \'[STILL RUNNING]\'. This is a wait timeout, not a transport failure.\n' +
+            'Use this for quick, self-contained commands. For interactive commands or persistent shell ' +
+            'state (cd, env persistence), use terminal_run instead.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                command: { type: 'string', description: 'Shell command to execute (run via shell)' },
+                stdin: { type: 'string', description: 'String to pipe to the process stdin (optional)' },
+                cwd: { type: 'string', description: 'Working directory. Defaults to the workspace folder root.' },
+                timeout_ms: {
+                    type: 'number',
+                    description:
+                        'Hard timeout in milliseconds. Optional; default is vscode-mcp.terminalRunTimeoutMs ' +
+                        `(${CONFIG_DEFAULTS.terminalRunTimeoutMs}). On expiry: process is killed, partial output returned.`,
+                },
+                env: {
+                    type: 'object',
+                    description: 'Additional environment variables merged on top of the current process.env (optional)',
+                    additionalProperties: true,
+                },
+                max_output_bytes: {
+                    type: 'number',
+                    description:
+                        'Max combined stdout+stderr size in bytes before truncation. Optional; ' +
+                        `default is vscode-mcp.maxOutputBytes (${CONFIG_DEFAULTS.maxOutputBytes}). ` +
+                        'If output exceeds this, the process is killed and output is truncated.',
+                },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
             required: ['command'],
@@ -957,6 +1000,23 @@ export class ServerlessServer {
                 }
             }
 
+            case 'execute': {
+                log(`[agent] execute: command="${args.command}" session="${this.sessionId}"`);
+                const command = args.command as string;
+                if (!command) {
+                    throw new Error("Parameter 'command' is required for execute.");
+                }
+                const stdin = args.stdin as string | undefined;
+                const cwd = args.cwd as string | undefined;
+                const timeoutMs =
+                    (args.timeout_ms as number | undefined) ?? getTerminalRunTimeoutMs();
+                const env = args.env as Record<string, string> | undefined;
+                const maxOutputBytes =
+                    (args.max_output_bytes as number | undefined) ?? getMaxOutputBytes();
+                const result = await this.directExecute(command, stdin, timeoutMs, cwd, env, maxOutputBytes);
+                return text(this.formatDirectResult(result));
+            }
+
             case 'open_file': {
                 const file = args.file as string;
                 const line = args.line as number | undefined;
@@ -1414,5 +1474,163 @@ export class ServerlessServer {
             response += `\n[exit code: ${result.exitCode}]`;
         }
         return response;
+    }
+
+    /**
+     * Execute a shell command directly via child_process (bypassing the VS Code
+     * terminal entirely). No terminal tab is shown; stdout, stderr, and the
+     * exit code are captured via pipes. If `stdin` is provided it is piped to
+     * the child's stdin and the stream is closed so the process can read EOF.
+     */
+    private async directExecute(
+        command: string,
+        stdin: string | undefined,
+        timeoutMs: number,
+        cwd: string | undefined,
+        env: Record<string, string> | undefined,
+        maxOutputBytes: number
+    ): Promise<CommandResult> {
+        const resolvedCwd = cwd || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
+        const resolvedEnv = { ...process.env, ...(env ?? {}) };
+
+        return new Promise<CommandResult>((resolve) => {
+            let stdout = '';
+            let stderr = '';
+            let resolved = false;
+            let truncated = false;
+
+            const options: SpawnOptions = {
+                shell: true,
+                cwd: resolvedCwd,
+                env: resolvedEnv,
+                stdio: ['pipe', 'pipe', 'pipe'],
+            };
+
+            const child = spawn(command, [], options);
+
+            const onData = (buf: Buffer) => {
+                stdout += buf.toString();
+                if (stdout.length + stderr.length > maxOutputBytes) {
+                    truncated = true;
+                    child.kill('SIGTERM');
+                }
+            };
+            const onErr = (buf: Buffer) => {
+                stderr += buf.toString();
+                if (stdout.length + stderr.length > maxOutputBytes) {
+                    truncated = true;
+                    child.kill('SIGTERM');
+                }
+            };
+
+            child.stdout?.on('data', onData);
+            child.stderr?.on('data', onErr);
+
+            // Pipe stdin if provided, then close the write side so the child
+            // sees EOF on its stdin.
+            if (stdin !== undefined) {
+                child.stdin?.write(stdin, (err) => {
+                    if (err) {
+                        log(`[execute] stdin write error: ${err}`);
+                    }
+                });
+            }
+            child.stdin?.end();
+
+            const timer = setTimeout(() => {
+                if (resolved) return;
+                log(
+                    `[execute] timeout terminal="${resolvedCwd}" command="${command.slice(0, 120)}" ` +
+                    `timeoutMs=${timeoutMs} stdoutChars=${stdout.length}`
+                );
+                // Graceful kill first, then SIGKILL after 3s as a safety net.
+                child.kill('SIGTERM');
+                setTimeout(() => {
+                    if (child.exitCode === null) {
+                        child.kill('SIGKILL');
+                    }
+                }, 3000);
+                resolved = true;
+                clearTimeout(timer);
+                resolve({
+                    output: stdout || '(no output)',
+                    exitCode: undefined,
+                    timedOut: true,
+                    stderr,
+                    timeoutMs,
+                    truncated,
+                    maxOutputBytes,
+                });
+            }, timeoutMs);
+
+            child.on('error', (err: Error) => {
+                if (resolved) return;
+                resolved = true;
+                clearTimeout(timer);
+                log(`[execute] spawn error: ${err}`);
+                resolve({
+                    output: `(execute error) ${err.message}`,
+                    exitCode: undefined,
+                    timedOut: false,
+                    stderr: '',
+                    truncated,
+                    maxOutputBytes,
+                });
+            });
+
+            child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
+                if (resolved) return;
+                resolved = true;
+                clearTimeout(timer);
+                log(
+                    `[execute] close code=${code} signal=${signal} ` +
+                    `stdoutChars=${stdout.length} stderrChars=${stderr.length}`
+                );
+                resolve({
+                    output: stdout,
+                    exitCode: code ?? undefined,
+                    timedOut: false,
+                    stderr,
+                    timeoutMs,
+                    truncated,
+                    maxOutputBytes,
+                });
+            });
+        });
+    }
+
+    /**
+     * Format the result of a direct (non-terminal) execution. Unlike
+     * `formatCommandResult`, this shows stdout and stderr separately so callers
+     * can distinguish the two streams.
+     */
+    private formatDirectResult(result: CommandResult): string {
+        if (result.timedOut) {
+            const secs = result.timeoutMs ? Math.round(result.timeoutMs / 1000) : 0;
+            let msg = '';
+            if (result.output) {
+                msg += result.output;
+            }
+            if (result.stderr) {
+                msg += `\n--- stderr ---\n${result.stderr}`;
+            }
+            if (!msg.trim()) {
+                msg = '(no output)';
+            }
+            return `${msg}\n\n[STILL RUNNING — timed out after ${secs}s, process killed, no exit code.]`;
+        }
+
+        let response = result.output || '';
+        if (result.stderr) {
+            response += `\n--- stderr ---\n${result.stderr}`;
+        }
+        if (result.exitCode !== undefined) {
+            response += `\n[exit code: ${result.exitCode}]`;
+        }
+        if (result.truncated && result.maxOutputBytes !== undefined) {
+            const limit = Math.round(result.maxOutputBytes / 1024);
+            response += `\n\n[output truncated at ${result.maxOutputBytes} bytes (~${limit} KB) — use terminal_run to see more]`;
+        }
+        return response.trim() || '(no output)';
     }
 }

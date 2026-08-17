@@ -14,6 +14,7 @@ export const CONFIG_DEFAULTS = {
     shellReadDrainMs: 500,
     shellStartBindMs: 5000,
     terminalCreateWarmupMs: 5000,
+    maxOutputBytes: 50_000,
 } as const;
 
 function mcpConfig(): vscode.WorkspaceConfiguration {
@@ -42,4 +43,8 @@ export function getShellStartBindMs(): number {
 
 export function getTerminalCreateWarmupMs(): number {
     return mcpConfig().get<number>('terminalCreateWarmupMs', CONFIG_DEFAULTS.terminalCreateWarmupMs);
+}
+
+export function getMaxOutputBytes(): number {
+    return mcpConfig().get<number>('maxOutputBytes', CONFIG_DEFAULTS.maxOutputBytes);
 }
