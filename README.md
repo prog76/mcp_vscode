@@ -1,373 +1,143 @@
-# VS Code MCP Extension
+# VS Code MCP Extension — Implementation Summary
 
-Exposes VS Code terminals as MCP tools for AI agents.
+## What Was Built
+
+A VS Code extension that exposes VS Code terminals, IDE features, and direct shell execution to AI agents via the Model Context Protocol (MCP). The extension runs entirely in the VS Code UI process (TypeScript) and connects to MCP clients through a hub/satellite WebSocket mesh.
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────┐
-│ Central Server (Python, localhost:9876)               │
-│  - Single MCP endpoint: /mcp                          │
-│  - Routes by workspace name                           │
-│  - Manages extension registry                         │
-└──────────────────────────────────────────────────────┘
-           ↑ HTTP                           ↑
-           │                                 │
-  ┌────────┴──────┐                 ┌────────┴──────────┐
-  │ VS Code #1    │                 │ VS Code #2        │
-  │ Extension     │                 │ Extension         │
-  │ Workspace:    │                 │ Workspace:        │
-  │ "project-a"   │                 │ "project-b"       │
-  └───────────────┘                 └───────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│ MCP Client (agent)                                          │
+│  - connects to hub via MCP protocol                        │
+└──────────────────────────┬─────────────────────────────────┘
+                           │
+┌──────────────────────────▼─────────────────────────────────┐
+│ Hub (one VS Code window acts as hub)                       │
+│  - exposes TOOLS list + routes tool calls                  │
+│  - WebSocket server for satellites                         │
+└──────────────────────────┬─────────────────────────────────┘
+                           │ WebSocket (register/execute/result)
+              ┌────────────┴────────────┐
+              │                         │
+┌─────────────▼──────────┐  ┌───────────▼──────────────┐
+│ Satellite VS Code #1   │  │ Satellite VS Code #2     │
+│  - ServerlessServer    │  │  - ServerlessServer      │
+│  - session_id="proj-a" │  │  - session_id="proj-b"   │
+└────────────────────────┘  └──────────────────────────┘
 ```
 
 ## Components
 
-### 1. Central MCP Server (`vscode_mcp_server.py`)
+### 1. Hub Server (`hubServer.ts`)
+- **MCP server** that exposes the full tool list to the agent
+- **WebSocket server** for satellite registration and tool-call routing
+- Routes each tool call to the satellite matching the requested `session_id`
+- Handles timeouts, reconnects, and hub-lost notifications
 
-Python server that:
-- Exposes MCP endpoint at `http://localhost:9876/mcp`
-- All tools take `workspace` as first argument
-- Routes tool calls to registered VS Code extensions
-- Manages extension lifecycle (heartbeat, cleanup)
+### 2. Satellite / Serverless Server (`serverlessServer.ts`)
+- Runs in every VS Code window (including the hub itself)
+- **`TOOLS` array** — the complete MCP tool schema
+- **`invokeTool()`** — dispatches tool calls to the right handler
+- **`directExecute()`** — runs shell commands directly via `child_process.spawn` (no terminal tab)
+- Connects to the hub via WebSocket as a satellite
 
-**Run:**
-```bash
-cd vscode
-python vscode_mcp_server.py                    # Default port 9876
-python vscode_mcp_server.py --port 9999        # Custom port
+### 3. Terminal Managers
+- **`terminalManager.ts`** — shell-integration engine (real TTY, exit codes, `cd`/env persistence, busy detection)
+- **`ptyTerminalManager.ts`** — node-pty fallback engine when shell integration is unavailable
+
+## Tools Exposed
+
+All tools take `session_id` (the VS Code workspace identifier, e.g. `llm [SSH: VDI-LS]`).
+
+### Terminal tools
+- `terminal_list_sessions` — list connected VS Code windows
+- `terminal_create` — create a named terminal (unique name: `prefix`, `prefix_1`, ...)
+- `terminal_list` — list terminals created via `terminal_create`
+- `terminal_run` — execute a command in a VS Code terminal, capture output
+- `terminal_wait` — wait for a running command to finish, get output + exit code
+- `terminal_send_text` — send input to a terminal (answer prompts, send `\x03`/`\x04`)
+- `terminal_read_output` — read raw buffered terminal output
+- `terminal_clear_buffer` — clear a terminal's output buffer
+
+### Direct execution
+- `execute` — run a shell command **directly** (NOT via VS Code terminal) and capture output
+
+```python
+# Run a command directly (no terminal)
+execute(command="echo hello && echo oops 1>&2")
+# -> stdout: "hello", stderr: "oops", exit code: 0
+
+# Pipe stdin
+execute(command="cat -n", stdin="line1\nline2")
+# -> stdout: "1 line1\n2 line2", exit code: 0
+
+# Limit output size (default is ~49 KB)
+execute(command="cat bigfile.log", max_output_bytes=10000)
+# -> stdout: truncated at 10000 bytes ... [output truncated at 10000 bytes (~10 KB)]
 ```
 
-### 2. VS Code Extension (`extension/`)
+**`execute` parameters:**
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `command` | string | yes | Shell command to execute (run via shell) |
+| `stdin` | string | no | String piped to the process stdin, then stream closed |
+| `cwd` | string | no | Working directory (defaults to workspace folder root) |
+| `timeout_ms` | number | no | Hard timeout (default: `vscode-mcp.terminalRunTimeoutMs` = 300000). On expiry: process killed (SIGTERM→SIGKILL), partial output returned |
+| `max_output_bytes` | number | no | Max combined stdout+stderr size before truncation (default: `vscode-mcp.maxOutputBytes` = 50000 ≈ 49 KB) |
+| `env` | object | no | Extra env vars merged on top of process.env |
+| `session_id` | string | yes | Workspace identifier |
 
-TypeScript extension that:
-- Starts local HTTP server to receive tool calls
-- Registers with central server on activation
-- Uses VS Code API to manage terminals
-- Tracks terminal output for reading
+**`execute` output:** stdout, then a `--- stderr ---` section (if any), then `[exit code: N]`. On truncation: `[output truncated at N bytes (~N KB) — use terminal_run to see more]`. On timeout: `[STILL RUNNING — timed out after Ns, process killed, no exit code.]`
 
-**Install:**
+### IDE tools
+- `get_diagnostics` — errors/warnings/hints from open files or a specific file
+- `get_document_symbols` — symbol outline of a file
+- `get_references` — find all references of a symbol
+- `rename_symbol` — rename a symbol across the workspace
+- `run_command` — execute any VS Code command by ID
+- `open_file` — open a file in the editor (visual action only)
+- `format_document` — format a file and save
+- `organize_imports` — remove unused + sort imports, save
+- `fix_all` — apply all auto-fixable diagnostics, save
+- `save_all` — save all open files
+- `find_in_files` — open workspace search panel
+- `get_hover_info` — type info/docs for a symbol
+
+### Debug tools
+- `debug_breakpoints` — add/remove/list/clear breakpoints
+- `debug_start` — start a debug session
+- `debug_stop` — stop a debug session
+- `debug_state` — snapshot of threads, call stacks, scopes, variables
+- `debug_control` — continue/pause/step/restart/evaluate
+- `debug_console_output` — read debug console output
+
+## Terminal Engine
+
+The extension uses **shell integration** by default (real TTY, exit codes, `cd`/env persistence, busy detection). If shell integration is unavailable (e.g. `ash`/Alpine shells), it falls back to a **node-pty** engine. `terminal_list` reports each terminal's engine (`[shell-integration]` vs `[no shell-integration]`).
+
+## Configuration
+
+Settings (all under `vscode-mcp.*`):
+- `host` / `port` — hub server address
+- `mode` — `auto` (probe server, use client mode if reachable else serverless) or `client-only`
+- `terminalEngine` — `auto` or `force-fallback`
+- `outputBufferLines` — max lines of terminal output to buffer
+- `satelliteTimeoutMs` — timeout for waiting on a satellite
+- `terminalRunTimeoutMs` — default hard wait for `terminal_run` (default 300000)
+- `terminalWaitTimeoutMs` — default max block for `terminal_wait` (default 300000)
+- `shellReadDrainMs` — drain time for shell-integration read stream
+- `shellStartBindMs` — max wait for shell start event rebind
+- `terminalCreateWarmupMs` — warmup wait after `terminal_create`
+- `maxOutputBytes` — default max output size for `execute` (default 50000 ≈ 49 KB)
+
+## Build
+
 ```bash
-cd vscode/extension
+cd vscode-mcp/extension
 npm install
-npm run compile
-# Then use "Extensions: Install from VSIX..." in VS Code
+npm run compile   # tsc -p ./
 ```
-
-## Usage
-
-### Agent Configuration
-
-```json
-{
-  "mcpServers": {
-    "vscode": {
-      "url": "http://localhost:9876/mcp"
-    }
-  }
-}
-```
-
-### Available Tools
-
-All tools take `workspace` as the first argument:
-
-#### `terminal_create`
-Create a new terminal in a workspace.
-
-```python
-terminal_create(
-    workspace="my-project",
-    name="Agent Terminal",
-    cwd="/path/to/project"  # optional
-)
-# Returns: terminal_id (string)
-```
-
-#### `terminal_exec`
-Execute a command in a terminal.
-
-```python
-terminal_exec(
-    workspace="my-project",
-    terminal_id="term_abc123",
-    command="ls -la"
-)
-# Returns: "Executed"
-```
-
-#### `terminal_read`
-Read terminal output since last read.
-
-```python
-terminal_read(
-    workspace="my-project",
-    terminal_id="term_abc123",
-    since_index=0  # 0 = all, use returned next_index for incremental
-)
-# Returns: JSON string with output and next_index
-```
-
-#### `terminal_list`
-List all active terminals in a workspace.
-
-```python
-terminal_list(workspace="my-project")
-# Returns: JSON array of terminal info
-```
-
-#### `terminal_kill`
-Kill a terminal.
-
-```python
-terminal_kill(
-    workspace="my-project",
-    terminal_id="term_abc123"
-)
-# Returns: "Killed"
-```
-
-### Example Workflow
-
-```python
-# Create terminal
-term_id = terminal_create(workspace="my-project", name="Build")
-
-# Execute command
-terminal_exec(workspace="my-project", terminal_id=term_id, command="npm install")
-
-# Read output
-result = terminal_read(workspace="my-project", terminal_id=term_id, since_index=0)
-data = json.loads(result)
-print(data['output'])  # Terminal output
-next_index = data['next_index']
-
-# Read more output later
-result = terminal_read(workspace="my-project", terminal_id=term_id, since_index=next_index)
-```
-
-## Policy Proxy Integration
-
-Add to your policy configuration:
-
-```yaml
-# dev/config/mcp-gateways/policy/vscode.yaml
-backend:
-  name: vscode
-  url: http://localhost:9876
-  path: /mcp/vscode
-  transport: http
-
-rules:
-  # Deny dangerous commands
-  - match:
-      tool: "terminal_exec"
-      command: "^(rm|sudo|chmod|chown|dd|mkfs)\\b"
-    action: deny
-    reason: "Dangerous command blocked"
-
-  # Require confirmation for git force operations
-  - match:
-      tool: "terminal_exec"
-      command: "git (push --force|reset --hard|rebase)"
-    action: confirm
-    reason: "Destructive git operation requires approval"
-
-  # Allow read-only commands
-  - match:
-      tool: "terminal_exec"
-      command: "^(cat|less|head|tail|grep|ls|echo|pwd|whoami)\\b"
-    action: allow
-
-  # Default deny
-  - match:
-      tool: ".*"
-    action: deny
-    reason: "No matching policy rule"
-```
-
-Agent connects through policy proxy:
-```json
-{
-  "mcpServers": {
-    "vscode": {
-      "url": "http://policy-proxy:8000/mcp/vscode"
-    }
-  }
-}
-```
-
-## Extension Settings
-
-- `vscode-mcp.host`: Host address for the hub server (default: `127.0.0.1`)
-- `vscode-mcp.port`: Port for the hub server (default: `27681`)
-- `vscode-mcp.heartbeatInterval`: Heartbeat interval in seconds (default: 30)
-- `vscode-mcp.showStatus`: Show connection status in the status bar (default: `true`)
-- `vscode-mcp.mode`: `auto` or `client-only` — auto: probe for hub, use client mode if reachable else become hub. client-only: always require the central server.
-- `vscode-mcp.terminalEngine`: `auto` or `force-fallback` — auto: use shell integration if available, else node-pty fallback.
-- `vscode-mcp.outputBufferLines`: Max lines of terminal output to buffer per terminal (default: `2000`)
-
-## API Reference
-
-### Central Server Endpoints
-
-#### `POST /api/register`
-Register a VS Code extension.
-
-**Request:**
-```json
-{
-  "workspace": "my-project",
-  "extension_url": "http://localhost:9877"
-}
-```
-
-**Response:**
-```json
-{
-  "status": "registered",
-  "workspace": "my-project",
-  "endpoint": "/"
-}
-```
-
-#### `POST /api/heartbeat`
-Send heartbeat to keep registration alive.
-
-**Request:**
-```json
-{
-  "workspace": "my-project"
-}
-```
-
-**Response:**
-```json
-{
-  "status": "ok"
-}
-```
-
-#### `GET /api/workspaces`
-List all registered workspaces.
-
-**Response:**
-```json
-{
-  "workspaces": [
-    {
-      "name": "my-project",
-      "url": "http://localhost:9877",
-      "last_heartbeat_seconds_ago": 5.2,
-      "registered_at": "2024-01-01T12:00:00"
-    }
-  ]
-}
-```
-
-#### `GET /api/health`
-Health check.
-
-**Response:**
-```json
-{
-  "status": "ok",
-  "extensions_count": 2,
-  "workspaces": ["my-project", "other-project"]
-}
-```
-
-### Extension Local Server Endpoints
-
-#### `POST /execute`
-Execute a tool via VS Code API.
-
-**Request:**
-```json
-{
-  "tool": "terminal_create",
-  "arguments": {
-    "name": "My Terminal",
-    "cwd": "/path/to/project"
-  }
-}
-```
-
-**Response:**
-```json
-{
-  "result": "term_abc123"
-}
-```
-
-## Installation
-
-### From PyPI (recommended)
-
-```bash
-pip install vscode-mcp
-```
-
-### From GitHub
-
-```bash
-pip install git+https://github.com/oscaryard/vscode-mcp
-```
-
-### From source
-
-```bash
-git clone https://github.com/oscaryard/vscode-mcp
-cd vscode-mcp
-pip install -e .
-```
-
-### Run the server
-
-```bash
-# Using the installed command
-vscode-mcp-server --port 9876
-
-# Or using Python module
-python -m vscode_mcp --port 9876
-```
-
-## Development
-
-### Setup Central Server
-
-```bash
-cd vscode
-pip install -r ../../mcp/requirements.txt
-python vscode_mcp_server.py
-```
-
-### Setup Extension
-
-```bash
-cd vscode/extension
-npm install
-npm run compile
-```
-
-Press F5 in VS Code to launch Extension Development Host.
-
-## Troubleshooting
-
-**Extension not registering:**
-- Check central server is running: `curl http://localhost:9876/api/health`
-- Check extension logs: View → Output → VS Code MCP Extension
-- Check central server logs for registration attempts
-
-**Tool calls failing:**
-- Verify workspace name matches: `curl http://localhost:9876/api/workspaces`
-- Check extension is running: Look for status bar icon
-- Check local server is running: Extension logs should show port
-
-**Terminal output not captured:**
-- Output is only captured after extension activates
-- Buffer limited to last 1000 lines
-- Terminal must be created via MCP tools (not manually)
 
 ## License
 
