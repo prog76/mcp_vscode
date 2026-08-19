@@ -199,9 +199,13 @@ Agent connects through policy proxy:
 
 ## Extension Settings
 
-- `vscode-mcp.serverUrl`: URL of central MCP server (default: `http://localhost:9876`)
+- `vscode-mcp.host`: Host address for the hub server (default: `127.0.0.1`)
+- `vscode-mcp.port`: Port for the hub server (default: `27681`)
 - `vscode-mcp.heartbeatInterval`: Heartbeat interval in seconds (default: 30)
-- `vscode-mcp.localPort`: Local port for extension server (default: 0 = random)
+- `vscode-mcp.showStatus`: Show connection status in the status bar (default: `true`)
+- `vscode-mcp.mode`: `auto` or `client-only` — auto: probe for hub, use client mode if reachable else become hub. client-only: always require the central server.
+- `vscode-mcp.terminalEngine`: `auto` or `force-fallback` — auto: use shell integration if available, else node-pty fallback.
+- `vscode-mcp.outputBufferLines`: Max lines of terminal output to buffer per terminal (default: `2000`)
 
 ## API Reference
 
