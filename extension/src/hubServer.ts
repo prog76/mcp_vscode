@@ -287,13 +287,11 @@ export class HubServer {
 
             const targetSession = args.session_id;
 
-            if (!targetSession || targetSession === this.ownSessionId) {
-                try {
-                    const result = await this.ownAgent.callTool(tool, args);
-                    return jsonrpcResult(msg.id, result);
-                } catch (e) {
-                    return jsonrpcError(msg.id, JsonRpcErrorCode.InternalError, String(e));
-                }
+            // SECURITY: session_id is required. The hub's own session (deploy host)
+            // must NOT be accessible — only explicitly invited satellite workspaces.
+            if (!targetSession) {
+                return jsonrpcError(msg.id, JsonRpcErrorCode.InvalidParams,
+                    'session_id is required. The agent must be told which workspace to target — it cannot discover or guess workspaces.');
             }
 
             const satellite = this.satellites.get(targetSession);
