@@ -12,6 +12,8 @@ import { parseWsMessage, sendMessage, replaceSocket } from './wsProtocol';
 export interface ToolResult {
     content: Array<{ type: string; text: string }>;
     isError?: boolean;
+    /** Machine-readable JSON payload, mirrored to MCP structuredContent. */
+    structuredContent?: Record<string, unknown>;
 }
 
 export const TOOLS = [
@@ -638,7 +640,7 @@ export class ServerlessServer {
             log(`[agent] callTool done: name="${name}" durationMs=${Date.now() - started} error=${message}`);
             // Return as tool text so hub/MCP clients surface the message instead of
             // a JSON-RPC error wrapped as ExceptionGroup / TaskGroup junk.
-            return { content: [{ type: 'text', text: message }], isError: true };
+            return { content: [{ type: 'text', text: message }], isError: true, structuredContent: { tool: name, ok: false, error: message } };
         }
     }
 
@@ -684,6 +686,17 @@ export class ServerlessServer {
             content: [{ type: 'text', text: s }],
             ...(isError ? { isError: true } : {}),
         });
+        // Build a ToolResult with both a human-readable text block and a
+        // machine-readable JSON payload (surfaced as MCP structuredContent).
+        const structured = (
+            s: string,
+            data: Record<string, unknown>,
+            isError = false,
+        ): ToolResult => ({
+            content: [{ type: 'text', text: s }],
+            structuredContent: data,
+            ...(isError ? { isError: true } : {}),
+        });
 
         switch (name) {
             case 'get_version': {
@@ -699,23 +712,30 @@ export class ServerlessServer {
                 } catch {
                     // fallback to unknown
                 }
-                return text(`vscode-mcp version: ${version}`);
+                return structured(`vscode-mcp version: ${version}`, { tool: 'get_version', version });
             }
 
             case 'terminal_list_sessions': {
                 log(`[agent] terminal_list_sessions: session="${this.sessionId}"`);
-                return text(`[hub] session="${this.sessionId}"`);
+                return structured(`[hub] session="${this.sessionId}"`, { sessions: [this.sessionId] });
             }
 
             case 'terminal_list': {
                 log(`[agent] terminal_list: session="${this.sessionId}"`);
                 const terminals = this.listManagedTerminals();
-                if (terminals.length === 0) return text('No terminals created via terminal_create.');
+                if (terminals.length === 0) return structured('No terminals created via terminal_create.', { tool: 'terminal_list', terminals: [] });
                 const lines = terminals.map(
                     (t) =>
                         `[${t.id}] "${t.name}"${t.isActive ? ' (active)' : ''}${t.hasShellIntegration ? ' [shell-integration]' : ' [no shell-integration]'}`
                 );
-                return text(lines.join('\n'));
+                const structuredT = terminals.map((t) => ({
+                    id: t.id,
+                    name: t.name,
+                    is_active: t.isActive,
+                    has_shell_integration: t.hasShellIntegration,
+                    engine: t.engine,
+                }));
+                return structured(lines.join('\n'), { tool: 'terminal_list', terminals: structuredT });
             }
 
             case 'terminal_run': {
@@ -730,23 +750,23 @@ export class ServerlessServer {
                 if (engine === 'pty') {
                     if (!wait) {
                         const result = await this.ptyManager.startBackgroundExecution(command, terminalName);
-                        return text(result.message);
+                        return structured(result.message, { tool: 'terminal_run', terminal_name: terminalName ?? null, started: true, wait: false });
                     }
                     const result = await this.ptyManager.executeCommand(command, terminalName, timeoutMs);
-                    return text(this.formatCommandResult(result));
+                    return structured(this.formatCommandResult(result), this.commandResultStructured(result));
                 }
                 if (stdin) {
                     this.terminalManager.sendText(command, terminalName, true);
                     await new Promise((r) => setTimeout(r, 100));
                     this.terminalManager.sendText(stdin, terminalName, true);
-                    return text(`Command sent with stdin. Use terminal_wait to retrieve output.`);
+                    return structured(`Command sent with stdin. Use terminal_wait to retrieve output.`, { tool: 'terminal_run', terminal_name: terminalName ?? null, sent: true, wait_for: 'terminal_wait' });
                 }
                 if (!wait) {
                     const result = await this.terminalManager.startBackgroundExecution(command, terminalName);
-                    return text(result.message);
+                    return structured(result.message, { tool: 'terminal_run', terminal_name: terminalName ?? null, started: true, wait: false });
                 }
                 const result = await this.terminalManager.executeCommand(command, terminalName, timeoutMs);
-                return text(this.formatCommandResult(result));
+                return structured(this.formatCommandResult(result), this.commandResultStructured(result));
             }
 
             case 'terminal_create': {
@@ -763,7 +783,11 @@ export class ServerlessServer {
                 } else {
                     result = await this.terminalManager.createTerminal(name, cwd, shell);
                 }
-                return text(`Created terminal "${result.terminalName}" (engine: ${result.engine})`);
+                return structured(`Created terminal "${result.terminalName}" (engine: ${result.engine})`, {
+                    tool: 'terminal_create',
+                    terminal_name: result.terminalName,
+                    engine: result.engine,
+                });
             }
 
             case 'terminal_send_text': {
@@ -787,10 +811,13 @@ export class ServerlessServer {
                 const terminalName = args.terminal_name as string | undefined;
                 const engine = this.resolveTerminalEngine(terminalName);
                 const lines = args.lines as number | undefined;
+                let output: string;
                 if (engine === 'pty') {
-                    return text(this.ptyManager.readOutput(terminalName, lines));
+                    output = this.ptyManager.readOutput(terminalName, lines);
+                } else {
+                    output = this.terminalManager.readOutput(terminalName, lines);
                 }
-                return text(this.terminalManager.readOutput(terminalName, lines));
+                return structured(output, { tool: 'terminal_read_output', terminal_name: terminalName ?? null, lines: lines ?? null, output });
             }
 
             case 'terminal_clear_buffer': {
@@ -801,7 +828,7 @@ export class ServerlessServer {
                 } else {
                     this.terminalManager.clearBuffer(terminalName);
                 }
-                return text('Buffer cleared.');
+                return structured('Buffer cleared.', { tool: 'terminal_clear_buffer', terminal_name: terminalName ?? null, cleared: true });
             }
 
             case 'terminal_wait': {
@@ -814,10 +841,10 @@ export class ServerlessServer {
                     (args.timeout_ms as number | undefined) ?? getTerminalWaitTimeoutMs();
                 if (engine === 'pty') {
                     const result = await this.ptyManager.waitForExecution(terminalName, timeoutMs);
-                    return text(this.formatCommandResult(result));
+                    return structured(this.formatCommandResult(result), this.commandResultStructured(result));
                 }
                 const result = await this.terminalManager.waitForExecution(terminalName, timeoutMs);
-                return text(this.formatCommandResult(result));
+                return structured(this.formatCommandResult(result), this.commandResultStructured(result));
             }
 
             case 'get_diagnostics': {
@@ -1014,7 +1041,7 @@ export class ServerlessServer {
                 const maxOutputBytes =
                     (args.max_output_bytes as number | undefined) ?? getMaxOutputBytes();
                 const result = await this.directExecute(command, stdin, timeoutMs, cwd, env, maxOutputBytes);
-                return text(this.formatDirectResult(result));
+                return structured(this.formatDirectResult(result), this.commandResultStructured(result));
             }
 
             case 'open_file': {
@@ -1474,6 +1501,23 @@ export class ServerlessServer {
             response += `\n[exit code: ${result.exitCode}]`;
         }
         return response;
+    }
+
+    /** Machine-readable JSON payload for a CommandResult (mirrors exec backend shape). */
+    private commandResultStructured(result: CommandResult): Record<string, unknown> {
+        const ok =
+            result.exitCode === undefined
+                ? !result.timedOut
+                : result.exitCode === 0;
+        return {
+            ok,
+            exit_code: result.exitCode ?? null,
+            stdout: result.output === '(no output)' ? '' : (result.output || ''),
+            stderr: result.stderr || '',
+            timed_out: !!result.timedOut,
+            truncated: !!result.truncated,
+            timeout_ms: result.timeoutMs ?? null,
+        };
     }
 
     /**

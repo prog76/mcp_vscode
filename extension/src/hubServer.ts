@@ -224,9 +224,11 @@ export class HubServer {
         }
 
         if (req.method === 'GET' && url === '/sessions') {
+            // Do not expose which window is the hub — sessions are equal peers
+            // and the role swaps on hub death. Return only the session IDs.
             const sessions = [
-                { sessionId: this.ownSessionId, own: true },
-                ...Array.from(this.satellites.values()).map((s) => ({ sessionId: s.sessionId, own: false })),
+                { sessionId: this.ownSessionId },
+                ...Array.from(this.satellites.values()).map((s) => ({ sessionId: s.sessionId })),
             ];
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(sessions));
@@ -276,9 +278,12 @@ export class HubServer {
             const args = msg.params?.arguments || {};
 
             if (tool === 'terminal_list_sessions') {
+                // Sessions are equal peers — hub vs satellite is an internal
+                // routing detail (roles swap on hub death), so don't leak which
+                // window is currently acting as hub. List only the session IDs.
                 const sessions = [
-                    `${this.ownSessionId} (hub)`,
-                    ...Array.from(this.satellites.keys()).map((s) => `${s} (satellite)`),
+                    this.ownSessionId,
+                    ...Array.from(this.satellites.keys()),
                 ];
                 return jsonrpcResult(msg.id, {
                     content: [{ type: 'text', text: sessions.length ? sessions.join('\n') : 'No sessions.' }],
@@ -287,16 +292,34 @@ export class HubServer {
 
             const targetSession = args.session_id;
 
-            // SECURITY: session_id is required. The hub's own session (deploy host)
-            // must NOT be accessible — only explicitly invited satellite workspaces.
+            // SECURITY: session_id is required so the agent cannot discover or
+            // guess workspaces — it must be told which one to target.
             if (!targetSession) {
                 return jsonrpcError(msg.id, JsonRpcErrorCode.InvalidParams,
                     'session_id is required. The agent must be told which workspace to target — it cannot discover or guess workspaces.');
             }
 
+            // The hub's own session is an equal peer of every satellite: "hub"
+            // is only an artifact of which window bound the WebSocket listener
+            // first, and a satellite automatically takes over when the hub
+            // dies. So when the target is our own session, run the tool
+            // locally on this window's ServerlessServer — identical to how a
+            // satellite executes it on receipt of an `execute` message.
+            // Only sessions that are registered *nowhere* are "empty" and
+            // rejected below.
+            if (targetSession === this.ownSessionId) {
+                log(`[hub] Routing tool="${tool}" to own session "${targetSession}"`);
+                try {
+                    const result = await this.ownAgent.callTool(tool, args);
+                    return jsonrpcResult(msg.id, result);
+                } catch (e) {
+                    return jsonrpcError(msg.id, JsonRpcErrorCode.InternalError, String(e));
+                }
+            }
+
             const satellite = this.satellites.get(targetSession);
             if (!satellite) {
-                log(`[hub] Cannot route tool="${tool}": no satellite "${targetSession}"`);
+                log(`[hub] Cannot route tool="${tool}": no session "${targetSession}"`);
                 return jsonrpcError(msg.id, JsonRpcErrorCode.InvalidParams, `No session registered with id: ${targetSession}`);
             }
 
