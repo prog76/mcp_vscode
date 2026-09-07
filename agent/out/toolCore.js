@@ -1,0 +1,338 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ToolCore = exports.TOOLS = void 0;
+const child_process_1 = require("child_process");
+const toolsSchema_1 = require("./toolsSchema");
+Object.defineProperty(exports, "TOOLS", { enumerable: true, get: function () { return toolsSchema_1.TOOLS; } });
+const ptyEngine_1 = require("./ptyEngine");
+const config_1 = require("./config");
+const logger_1 = require("./logger");
+const NOT_IMPL = (tool) => `${tool} is not implemented in the standalone vscode-mcp-agent (no VS Code window attached). ` +
+    `Use a VS Code window session for this tool.`;
+/**
+ * Standalone twin of the extension's ServerlessServer. Same callTool contract,
+ * same TOOLS schema; terminal tools run on the local pty engine, IDE/debug
+ * tools return a clear not-implemented error.
+ */
+class ToolCore {
+    constructor(sessionId, defaultCwd, version) {
+        this.ptyManager = new ptyEngine_1.PtyTerminalManager();
+        this.sessionId = sessionId;
+        this.defaultCwd = defaultCwd;
+        this.version = version;
+    }
+    dispose() {
+        this.ptyManager.dispose();
+    }
+    async callTool(name, args) {
+        (0, logger_1.log)(`[agent] callTool start: name="${name}"`);
+        const started = Date.now();
+        try {
+            const result = await this.invokeTool(name, args);
+            const raw = result.content?.[0]?.text ?? '';
+            const preview = raw.replace(/\s+/g, ' ').slice(0, 160);
+            (0, logger_1.log)(`[agent] callTool done: name="${name}" durationMs=${Date.now() - started}` +
+                (preview ? ` preview="${preview}${raw.length > 160 ? '…' : ''}"` : ''));
+            return result;
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            (0, logger_1.log)(`[agent] callTool done: name="${name}" durationMs=${Date.now() - started} error=${message}`);
+            // Return as tool text so hub/MCP clients surface the message instead of
+            // a JSON-RPC error wrapped as ExceptionGroup / TaskGroup junk.
+            return { content: [{ type: 'text', text: message }], isError: true, structuredContent: { tool: name, ok: false, error: message } };
+        }
+    }
+    async invokeTool(name, args) {
+        const text = (s, isError = false) => ({
+            content: [{ type: 'text', text: s }],
+            ...(isError ? { isError: true } : {}),
+        });
+        const structured = (s, data, isError = false) => ({
+            content: [{ type: 'text', text: s }],
+            structuredContent: data,
+            ...(isError ? { isError: true } : {}),
+        });
+        switch (name) {
+            case 'get_version': {
+                return structured(`vscode-mcp-agent (standalone) version: ${this.version}`, { tool: 'get_version', version: this.version });
+            }
+            case 'terminal_list_sessions': {
+                (0, logger_1.log)(`[agent] terminal_list_sessions: session="${this.sessionId}"`);
+                return structured(`[hub] session="${this.sessionId}"`, { sessions: [this.sessionId] });
+            }
+            case 'terminal_list': {
+                (0, logger_1.log)(`[agent] terminal_list: session="${this.sessionId}"`);
+                const terminals = this.ptyManager.listTerminals();
+                if (terminals.length === 0)
+                    return structured('No terminals created via terminal_create.', { tool: 'terminal_list', terminals: [] });
+                const lines = terminals.map((t) => `[${t.id}] "${t.name}"${t.isActive ? ' (active)' : ''}${t.hasShellIntegration ? ' [shell-integration]' : ' [no shell-integration]'}`);
+                const structuredT = terminals.map((t) => ({
+                    id: t.id,
+                    name: t.name,
+                    is_active: t.isActive,
+                    has_shell_integration: t.hasShellIntegration,
+                    engine: t.engine,
+                }));
+                return structured(lines.join('\n'), { tool: 'terminal_list', terminals: structuredT });
+            }
+            case 'terminal_run': {
+                (0, logger_1.log)(`[agent] terminal_run: command="${args.command}" session="${this.sessionId}"`);
+                const command = args.command;
+                const terminalName = args.terminal_name;
+                const wait = args.wait ?? true;
+                const timeoutMs = args.timeout_ms ?? (0, config_1.getTerminalRunTimeoutMs)();
+                const stdin = args.stdin;
+                if (stdin) {
+                    this.ptyManager.sendText(command, terminalName, true);
+                    await new Promise((r) => setTimeout(r, 100));
+                    this.ptyManager.sendText(stdin, terminalName, true);
+                    return structured(`Command sent with stdin. Use terminal_wait to retrieve output.`, { tool: 'terminal_run', terminal_name: terminalName ?? null, sent: true, wait_for: 'terminal_wait' });
+                }
+                if (!wait) {
+                    const result = await this.ptyManager.startBackgroundExecution(command, terminalName);
+                    return structured(result.message, { tool: 'terminal_run', terminal_name: result.terminalName, started: true, wait: false });
+                }
+                const result = await this.ptyManager.executeCommand(command, terminalName, timeoutMs);
+                return structured(this.formatCommandResult(result), this.commandResultStructured(result));
+            }
+            case 'terminal_create': {
+                (0, logger_1.log)(`[agent] terminal_create: name_prefix="${args.name_prefix}" session="${this.sessionId}"`);
+                const prefix = args.name_prefix;
+                const cwd = args.cwd || this.defaultCwd;
+                const shell = args.shell;
+                const name = this.nextUniqueName(prefix);
+                const result = this.ptyManager.createTerminal(name, cwd, shell);
+                return structured(`Created terminal "${result.terminalName}" (engine: ${result.engine})`, {
+                    tool: 'terminal_create',
+                    terminal_name: result.terminalName,
+                    engine: result.engine,
+                });
+            }
+            case 'terminal_send_text': {
+                const rawText = args.text;
+                const processed = rawText
+                    .replace(/\\x03/g, '\x03')
+                    .replace(/\\x04/g, '\x04')
+                    .replace(/\\n/g, '\n');
+                const terminalName = args.terminal_name;
+                const addNewline = args.add_newline ?? true;
+                this.ptyManager.sendText(processed, terminalName, addNewline);
+                return text(`Text sent to terminal${terminalName ? ` "${terminalName}"` : ''}.`);
+            }
+            case 'terminal_read_output': {
+                const terminalName = args.terminal_name;
+                const lines = args.lines;
+                const output = this.ptyManager.readOutput(terminalName, lines);
+                return structured(output, { tool: 'terminal_read_output', terminal_name: terminalName ?? null, lines: lines ?? null, output });
+            }
+            case 'terminal_clear_buffer': {
+                const terminalName = args.terminal_name;
+                this.ptyManager.clearBuffer(terminalName);
+                return structured('Buffer cleared.', { tool: 'terminal_clear_buffer', terminal_name: terminalName ?? null, cleared: true });
+            }
+            case 'terminal_wait': {
+                const terminalName = args.terminal_name;
+                if (!terminalName) {
+                    throw new Error("terminal_wait requires 'terminal_name'.");
+                }
+                const timeoutMs = args.timeout_ms ?? (0, config_1.getTerminalWaitTimeoutMs)();
+                const result = await this.ptyManager.waitForExecution(terminalName, timeoutMs);
+                return structured(this.formatCommandResult(result), this.commandResultStructured(result));
+            }
+            case 'execute': {
+                (0, logger_1.log)(`[agent] execute: command="${args.command}" session="${this.sessionId}"`);
+                const command = args.command;
+                if (!command) {
+                    throw new Error("Parameter 'command' is required for execute.");
+                }
+                const stdin = args.stdin;
+                const cwd = args.cwd || this.defaultCwd;
+                const timeoutMs = args.timeout_ms ?? (0, config_1.getTerminalRunTimeoutMs)();
+                const env = args.env;
+                const maxOutputBytes = args.max_output_bytes ?? (0, config_1.getMaxOutputBytes)();
+                const result = await this.directExecute(command, stdin, timeoutMs, cwd, env, maxOutputBytes);
+                return structured(this.formatDirectResult(result), this.commandResultStructured(result));
+            }
+            case 'get_diagnostics':
+            case 'get_document_symbols':
+            case 'get_references':
+            case 'rename_symbol':
+            case 'run_command':
+            case 'open_file':
+            case 'format_document':
+            case 'organize_imports':
+            case 'fix_all':
+            case 'save_all':
+            case 'find_in_files':
+            case 'get_hover_info':
+            case 'debug_breakpoints':
+            case 'debug_start':
+            case 'debug_stop':
+            case 'debug_state':
+            case 'debug_control':
+            case 'debug_console_output':
+                return text(NOT_IMPL(name), true);
+            default:
+                throw new Error(`Unknown tool: ${name}`);
+        }
+    }
+    /** Compute a unique terminal name from a prefix (prefix, prefix_1, prefix_2, ...). */
+    nextUniqueName(prefix) {
+        if (!this.ptyManager.hasTerminal(prefix)) {
+            return prefix;
+        }
+        let i = 1;
+        while (this.ptyManager.hasTerminal(`${prefix}_${i}`)) {
+            i++;
+        }
+        return `${prefix}_${i}`;
+    }
+    formatCommandResult(result) {
+        let response = result.output || '(no output)';
+        if (result.exitCode !== undefined) {
+            response += `\n[exit code: ${result.exitCode}]`;
+        }
+        return response;
+    }
+    commandResultStructured(result) {
+        const ok = result.exitCode === undefined
+            ? !result.timedOut
+            : result.exitCode === 0;
+        return {
+            ok,
+            exit_code: result.exitCode ?? null,
+            stdout: result.output === '(no output)' ? '' : (result.output || ''),
+            stderr: result.stderr || '',
+            timed_out: !!result.timedOut,
+            truncated: !!result.truncated,
+            timeout_ms: result.timeoutMs ?? null,
+        };
+    }
+    async directExecute(command, stdin, timeoutMs, cwd, env, maxOutputBytes) {
+        const resolvedCwd = cwd || this.defaultCwd || process.cwd();
+        const resolvedEnv = { ...process.env, ...(env ?? {}) };
+        return new Promise((resolve) => {
+            let stdout = '';
+            let stderr = '';
+            let resolved = false;
+            let truncated = false;
+            const options = {
+                shell: true,
+                cwd: resolvedCwd,
+                env: resolvedEnv,
+                stdio: ['pipe', 'pipe', 'pipe'],
+            };
+            const child = (0, child_process_1.spawn)(command, [], options);
+            const onData = (buf) => {
+                stdout += buf.toString();
+                if (stdout.length + stderr.length > maxOutputBytes) {
+                    truncated = true;
+                    child.kill('SIGTERM');
+                }
+            };
+            const onErr = (buf) => {
+                stderr += buf.toString();
+                if (stdout.length + stderr.length > maxOutputBytes) {
+                    truncated = true;
+                    child.kill('SIGTERM');
+                }
+            };
+            child.stdout?.on('data', onData);
+            child.stderr?.on('data', onErr);
+            if (stdin !== undefined) {
+                child.stdin?.write(stdin, (err) => {
+                    if (err) {
+                        (0, logger_1.log)(`[execute] stdin write error: ${err}`);
+                    }
+                });
+            }
+            child.stdin?.end();
+            const timer = setTimeout(() => {
+                if (resolved)
+                    return;
+                (0, logger_1.log)(`[execute] timeout cwd="${resolvedCwd}" command="${command.slice(0, 120)}" ` +
+                    `timeoutMs=${timeoutMs} stdoutChars=${stdout.length}`);
+                child.kill('SIGTERM');
+                setTimeout(() => {
+                    if (child.exitCode === null) {
+                        child.kill('SIGKILL');
+                    }
+                }, 3000);
+                resolved = true;
+                clearTimeout(timer);
+                resolve({
+                    output: stdout || '(no output)',
+                    exitCode: undefined,
+                    timedOut: true,
+                    stderr,
+                    timeoutMs,
+                    truncated,
+                    maxOutputBytes,
+                });
+            }, timeoutMs);
+            child.on('error', (err) => {
+                if (resolved)
+                    return;
+                resolved = true;
+                clearTimeout(timer);
+                (0, logger_1.log)(`[execute] spawn error: ${err}`);
+                resolve({
+                    output: `(execute error) ${err.message}`,
+                    exitCode: undefined,
+                    timedOut: false,
+                    stderr: '',
+                    truncated,
+                    maxOutputBytes,
+                });
+            });
+            child.on('close', (code, signal) => {
+                if (resolved)
+                    return;
+                resolved = true;
+                clearTimeout(timer);
+                (0, logger_1.log)(`[execute] close code=${code} signal=${signal} ` +
+                    `stdoutChars=${stdout.length} stderrChars=${stderr.length}`);
+                resolve({
+                    output: stdout,
+                    exitCode: code ?? undefined,
+                    timedOut: false,
+                    stderr,
+                    timeoutMs,
+                    truncated,
+                    maxOutputBytes,
+                });
+            });
+        });
+    }
+    formatDirectResult(result) {
+        if (result.timedOut) {
+            const secs = result.timeoutMs ? Math.round(result.timeoutMs / 1000) : 0;
+            let msg = '';
+            if (result.output) {
+                msg += result.output;
+            }
+            if (result.stderr) {
+                msg += `\n--- stderr ---\n${result.stderr}`;
+            }
+            if (!msg.trim()) {
+                msg = '(no output)';
+            }
+            return `${msg}\n\n[STILL RUNNING — timed out after ${secs}s, process killed, no exit code.]`;
+        }
+        let response = result.output || '';
+        if (result.stderr) {
+            response += `\n--- stderr ---\n${result.stderr}`;
+        }
+        if (result.exitCode !== undefined) {
+            response += `\n[exit code: ${result.exitCode}]`;
+        }
+        if (result.truncated) {
+            const kb = Math.round((result.maxOutputBytes ?? 0) / 1024);
+            response += `\n[output truncated at ${result.maxOutputBytes} bytes (~${kb} KB) — use terminal_run to see more]`;
+        }
+        return response;
+    }
+}
+exports.ToolCore = ToolCore;
+//# sourceMappingURL=toolCore.js.map
