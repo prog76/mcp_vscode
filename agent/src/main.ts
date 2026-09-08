@@ -18,8 +18,9 @@ import * as path from 'path';
 import { ToolCore } from './toolCore';
 import { HubServer } from './hubServer';
 import { CONFIG_DEFAULTS, setConfigOverrides } from './config';
-import { parseWsMessage, sendMessage, replaceSocket } from './wsProtocol';
+import { parseWsMessage, sendMessage, replaceSocket } from '@vscode-mcp/shared/wsProtocol';
 import { initLoggerFile, log } from './logger';
+import { setTracer } from '@vscode-mcp/shared/tracer';
 
 interface CliOptions {
     sessionId: string;
@@ -125,6 +126,7 @@ async function main(): Promise<void> {
         process.exit(2);
     }
     initLoggerFile(opts.logFile);
+    setTracer((m) => log(m)); // full-power stdout+file tracing for shared modules
     setConfigOverrides(opts.overrides);
     if (!opts.hubUrl && !opts.standalone) {
         const hubUp = await probeHub(opts.host, opts.port);

@@ -4,7 +4,7 @@ import type { ToolResult } from './toolCore';
 import { TOOLS } from '@vscode-mcp/shared/toolsSchema';
 import { CONFIG_DEFAULTS } from './config';
 import { log } from './logger';
-import { parseWsMessage, sendMessage, replaceSocket, RequestCorrelator, newRequestId } from './wsProtocol';
+import { parseWsMessage, sendMessage, replaceSocket, RequestCorrelator, newRequestId } from '@vscode-mcp/shared/wsProtocol';
 import { jsonrpcResult, jsonrpcError, JsonRpcErrorCode } from '@vscode-mcp/shared/mcpResponse';
 
 interface SatelliteInfo {
