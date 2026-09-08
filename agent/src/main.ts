@@ -16,7 +16,7 @@ import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
 import { ToolCore } from './toolCore';
-import { HubServer } from './hubServer';
+import { HubServer } from '@vscode-mcp/shared/hubServer';
 import { CONFIG_DEFAULTS, setConfigOverrides } from './config';
 import { parseWsMessage, sendMessage, replaceSocket } from '@vscode-mcp/shared/wsProtocol';
 import { initLoggerFile, log } from './logger';

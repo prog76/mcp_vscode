@@ -1,10 +1,11 @@
 import * as http from 'http';
 import WebSocket from 'ws';
-import { ServerlessServer, ToolResult, TOOLS } from './serverlessServer';
+import { ToolResult, Tool, Agent } from './types';
+import { TOOLS } from './toolsSchema';
 import { CONFIG_DEFAULTS } from './config';
-import { log } from './logger';
-import { parseWsMessage, sendMessage, replaceSocket, RequestCorrelator, newRequestId } from '@vscode-mcp/shared/wsProtocol';
-import { jsonrpcResult, jsonrpcError, JsonRpcErrorCode } from '@vscode-mcp/shared/mcpResponse';
+import { trace } from './tracer';
+import { parseWsMessage, sendMessage, replaceSocket, RequestCorrelator, newRequestId } from './wsProtocol';
+import { jsonrpcResult, jsonrpcError, JsonRpcErrorCode } from './mcpResponse';
 
 interface SatelliteInfo {
     sessionId: string;
@@ -19,7 +20,7 @@ export interface HubEvent {
 }
 
 export class HubServer {
-    private ownAgent: ServerlessServer;
+    private ownAgent: Agent;
     private ownSessionId: string;
     private extensionVersion: string;
     private server: http.Server | null = null;
@@ -32,7 +33,7 @@ export class HubServer {
     private satelliteTimeoutMs: number;
 
     constructor(
-        ownAgent: ServerlessServer,
+        ownAgent: Agent,
         ownSessionId: string,
         extensionVersion: string,
         port: number,
@@ -142,10 +143,10 @@ export class HubServer {
                         clearTimeout(timeout);
                         const existing = this.satellites.get(msg.sessionId);
                         if (existing && existing.ws !== ws) {
-                            log(`[hub] Replacing existing satellite connection for "${msg.sessionId}"`);
+                            trace(`[hub] Replacing existing satellite connection for "${msg.sessionId}"`);
                             replaceSocket(existing.ws);
                         }
-                        log(`[hub] Satellite registered: "${msg.sessionId}"`);
+                        trace(`[hub] Satellite registered: "${msg.sessionId}"`);
                         this.satellites.set(msg.sessionId, { sessionId: msg.sessionId, ws, lastSeen: Date.now() });
                         sendMessage(ws, { type: 'registered', sessionId: msg.sessionId });
                         this.emitEvent({
@@ -176,7 +177,7 @@ export class HubServer {
             for (const [sessionId, info] of this.satellites.entries()) {
                 if (info.ws === ws) {
                     this.satellites.delete(sessionId);
-                    log(`[hub] Satellite disconnected: "${sessionId}"`);
+                    trace(`[hub] Satellite disconnected: "${sessionId}"`);
                     this.emitEvent({
                         type: 'satellite-disconnected',
                         sessionId,
@@ -191,7 +192,7 @@ export class HubServer {
     private pendingRequests = new RequestCorrelator<ToolResult>();
 
     private handleSatelliteResult(msg: any): void {
-        log(`[hub] Satellite ${msg.type} for requestId=${msg.requestId}`);
+        trace(`[hub] Satellite ${msg.type} for requestId=${msg.requestId}`);
         if (msg.type === 'error') {
             this.pendingRequests.reject(msg.requestId, new Error(msg.message || 'Satellite error'));
         } else {
@@ -308,7 +309,7 @@ export class HubServer {
             // Only sessions that are registered *nowhere* are "empty" and
             // rejected below.
             if (targetSession === this.ownSessionId) {
-                log(`[hub] Routing tool="${tool}" to own session "${targetSession}"`);
+                trace(`[hub] Routing tool="${tool}" to own session "${targetSession}"`);
                 try {
                     const result = await this.ownAgent.callTool(tool, args);
                     return jsonrpcResult(msg.id, result);
@@ -319,12 +320,12 @@ export class HubServer {
 
             const satellite = this.satellites.get(targetSession);
             if (!satellite) {
-                log(`[hub] Cannot route tool="${tool}": no session "${targetSession}"`);
+                trace(`[hub] Cannot route tool="${tool}": no session "${targetSession}"`);
                 return jsonrpcError(msg.id, JsonRpcErrorCode.InvalidParams, `No session registered with id: ${targetSession}`);
             }
 
             const requestId = newRequestId();
-            log(`[hub] Routing tool="${tool}" to satellite "${targetSession}" (requestId=${requestId})`);
+            trace(`[hub] Routing tool="${tool}" to satellite "${targetSession}" (requestId=${requestId})`);
             try {
                 const result = await this.executeOnSatellite(satellite.ws, requestId, tool, args);
                 return jsonrpcResult(msg.id, result);
@@ -352,7 +353,7 @@ export class HubServer {
     private executeOnSatellite(ws: WebSocket, requestId: string, tool: string, args: any): Promise<ToolResult> {
         const timeoutMs = this.resolveSatelliteWaitMs(tool, args || {});
         const promise = this.pendingRequests.register(requestId, timeoutMs, (id) => {
-            log(`[hub] Satellite timed out for requestId=${id} tool="${tool}" after ${timeoutMs}ms`);
+            trace(`[hub] Satellite timed out for requestId=${id} tool="${tool}" after ${timeoutMs}ms`);
         });
 
         const sent = sendMessage(ws, {
@@ -364,10 +365,10 @@ export class HubServer {
         if (!sent) {
             const err = new Error(`Failed to send execute to satellite — tool="${tool}" requestId=${requestId}`);
             this.pendingRequests.reject(requestId, err);
-            log(`[hub] Failed to send execute to satellite — tool="${tool}" requestId=${requestId}`);
+            trace(`[hub] Failed to send execute to satellite — tool="${tool}" requestId=${requestId}`);
             return promise;
         }
-        log(`[hub] Sent execute to satellite — tool="${tool}" requestId=${requestId} (timeout=${timeoutMs}ms)`);
+        trace(`[hub] Sent execute to satellite — tool="${tool}" requestId=${requestId} (timeout=${timeoutMs}ms)`);
         return promise;
     }
 }

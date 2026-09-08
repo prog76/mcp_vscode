@@ -16,7 +16,7 @@ import * as vscode from 'vscode';
 import { TerminalManager } from './terminalManager';
 import { PtyTerminalManager } from './ptyTerminalManager';
 import { ServerlessServer } from './serverlessServer';
-import { HubServer } from './hubServer';
+import { HubServer } from '@vscode-mcp/shared/hubServer';
 import { CONFIG_DEFAULTS, getSatelliteTimeoutMs } from './config';
 import { initLogger, log } from './logger';
 import { setTracer } from '@vscode-mcp/shared/tracer';
