@@ -40,6 +40,10 @@ jobs:
         working-directory: ./extension
         run: npm install
 
+      - name: Install shared dependencies
+        working-directory: ./shared
+        run: npm install
+
       - name: Compile TypeScript
         working-directory: ./extension
         run: npm run compile
