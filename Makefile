@@ -27,7 +27,9 @@ build: ## Build extension (VSIX, version bump) AND agent together
 	@$(MAKE) build-agent
 
 build-agent: ## Build only the standalone agent (no VSIX, no version bump)
-	@cd agent && ../extension/node_modules/.bin/tsc -p tsconfig.json
+	@cd shared && npm install --silent
+	@cd agent && npm install --silent
+	@cd agent && npx tsc -p tsconfig.json
 	@echo "Agent built: agent/out/agent/src/main.js"
 
 clean: ## Clean build artifacts

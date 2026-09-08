@@ -36,6 +36,10 @@ jobs:
         working-directory: ./agent
         run: npm install
 
+      - name: Install shared dependencies
+        working-directory: ./shared
+        run: npm install
+
       - name: Compile agent
         working-directory: ./agent
         run: npx tsc -p tsconfig.json
