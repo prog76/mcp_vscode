@@ -1,5 +1,11 @@
 {
     "compilerOptions": {
+        "baseUrl": ".",
+        "paths": {
+            "@vscode-mcp/shared/*": [
+                "../shared/src/*"
+            ]
+        },
         "module": "commonjs",
         "target": "ES2020",
         "outDir": "out",
@@ -8,7 +14,7 @@
             "dom"
         ],
         "sourceMap": true,
-        "rootDir": "src",
+        "rootDir": "..",
         "strict": true,
         "esModuleInterop": true,
         "skipLibCheck": true,
@@ -22,5 +28,9 @@
     "exclude": [
         "node_modules",
         ".vscode-test"
+    ],
+    "include": [
+        "src/**/*",
+        "../shared/src/**/*"
     ]
 }

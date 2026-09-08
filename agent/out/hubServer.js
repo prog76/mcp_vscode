@@ -39,11 +39,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.HubServer = void 0;
 const http = __importStar(require("http"));
 const ws_1 = __importDefault(require("ws"));
-const toolsSchema_1 = require("./toolsSchema");
+const toolsSchema_1 = require("@vscode-mcp/shared/toolsSchema");
 const config_1 = require("./config");
 const logger_1 = require("./logger");
-const wsProtocol_1 = require("./wsProtocol");
-const mcpResponse_1 = require("./mcpResponse");
+const wsProtocol_1 = require("@vscode-mcp/shared/wsProtocol");
+const mcpResponse_1 = require("@vscode-mcp/shared/mcpResponse");
 class HubServer {
     constructor(ownAgent, ownSessionId, extensionVersion, port, host = config_1.CONFIG_DEFAULTS.host, satelliteTimeoutMs = config_1.CONFIG_DEFAULTS.satelliteTimeoutMs) {
         this.server = null;

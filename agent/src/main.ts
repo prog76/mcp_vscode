@@ -4,6 +4,7 @@ import * as path from 'path';
 import { ToolCore } from './toolCore';
 import { HubServer } from './hubServer';
 import { CONFIG_DEFAULTS, setConfigOverrides } from './config';
+import { parseWsMessage, sendMessage, replaceSocket } from './wsProtocol';
 import { initLoggerFile, log } from './logger';
 
 interface CliOptions {
@@ -177,7 +178,6 @@ async function main(): Promise<void> {
 // Satellite client: a thin copy of the extension's ServerlessServer WS side
 // (register / execute / result / ping-pong), driven by ToolCore.callTool.
 import WebSocket from 'ws';
-import { parseWsMessage, sendMessage, replaceSocket } from './wsProtocol';
 
 
 async function satelliteConnect(

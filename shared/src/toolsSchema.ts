@@ -1,12 +1,7 @@
+import { Tool } from './types';
 import { CONFIG_DEFAULTS } from './config';
-/**
- * Verbatim copy of the TOOLS schema from extension/src/serverlessServer.ts
- * (generated; do not edit by hand - re-copy when the extension schema changes).
- * Keeping the schema byte-identical means hubs and gateway policies need no
- * changes for standalone sessions; unsupported tools return not-implemented
- * errors from toolCore.ts rather than being removed from the schema.
- */
-export const TOOLS = [
+
+export const TOOLS: Tool[] = [
     {
         name: 'get_version',
         description: 'Get the version of the vscode-mcp extension (read from package.json at runtime).',
@@ -452,4 +447,4 @@ export const TOOLS = [
             },
         },
     },
-];
+]

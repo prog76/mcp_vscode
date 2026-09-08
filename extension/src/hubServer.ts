@@ -4,7 +4,7 @@ import { ServerlessServer, ToolResult, TOOLS } from './serverlessServer';
 import { CONFIG_DEFAULTS } from './config';
 import { log } from './logger';
 import { parseWsMessage, sendMessage, replaceSocket, RequestCorrelator, newRequestId } from './wsProtocol';
-import { jsonrpcResult, jsonrpcError, JsonRpcErrorCode } from './mcpResponse';
+import { jsonrpcResult, jsonrpcError, JsonRpcErrorCode } from '@vscode-mcp/shared/mcpResponse';
 
 interface SatelliteInfo {
     sessionId: string;

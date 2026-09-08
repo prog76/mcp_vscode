@@ -1,4 +1,4 @@
-import { TerminalInfo, CommandResult } from './types';
+import { TerminalInfo, CommandResult } from '@vscode-mcp/shared/types';
 import { log } from './logger';
 
 interface PtyTerminalInfo {

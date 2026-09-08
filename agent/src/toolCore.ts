@@ -1,8 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, SpawnOptions } from 'child_process';
-import { TOOLS } from './toolsSchema';
-import { CommandResult, TerminalInfo } from './types';
+import { TOOLS } from '@vscode-mcp/shared/toolsSchema';
+import { CommandResult, TerminalInfo } from '@vscode-mcp/shared/types';
 import { PtyTerminalManager } from './ptyEngine';
 import {
     getTerminalRunTimeoutMs,

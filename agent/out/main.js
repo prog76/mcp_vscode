@@ -230,7 +230,7 @@ async function main() {
 // Satellite client: a thin copy of the extension's ServerlessServer WS side
 // (register / execute / result / ping-pong), driven by ToolCore.callTool.
 const ws_1 = __importDefault(require("ws"));
-const wsProtocol_1 = require("./wsProtocol");
+const wsProtocol_1 = require("@vscode-mcp/shared/wsProtocol");
 async function satelliteConnect(agent, wsUrl, onHubLost) {
     // Disconnect any previous socket without firing hubLost.
     satelliteConnect.ws && (0, wsProtocol_1.replaceSocket)(satelliteConnect.ws);

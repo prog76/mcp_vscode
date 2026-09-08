@@ -1,11 +1,11 @@
 import * as http from 'http';
 import WebSocket from 'ws';
 import type { ToolResult } from './toolCore';
-import { TOOLS } from './toolsSchema';
+import { TOOLS } from '@vscode-mcp/shared/toolsSchema';
 import { CONFIG_DEFAULTS } from './config';
 import { log } from './logger';
 import { parseWsMessage, sendMessage, replaceSocket, RequestCorrelator, newRequestId } from './wsProtocol';
-import { jsonrpcResult, jsonrpcError, JsonRpcErrorCode } from './mcpResponse';
+import { jsonrpcResult, jsonrpcError, JsonRpcErrorCode } from '@vscode-mcp/shared/mcpResponse';
 
 interface SatelliteInfo {
     sessionId: string;

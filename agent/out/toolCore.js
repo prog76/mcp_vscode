@@ -2,7 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ToolCore = exports.TOOLS = void 0;
 const child_process_1 = require("child_process");
-const toolsSchema_1 = require("./toolsSchema");
+const toolsSchema_1 = require("@vscode-mcp/shared/toolsSchema");
 Object.defineProperty(exports, "TOOLS", { enumerable: true, get: function () { return toolsSchema_1.TOOLS; } });
 const ptyEngine_1 = require("./ptyEngine");
 const config_1 = require("./config");

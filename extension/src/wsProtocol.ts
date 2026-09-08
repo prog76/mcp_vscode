@@ -1,10 +1,11 @@
 import WebSocket from 'ws';
-import { log } from './logger';
 
 /**
  * Shared WebSocket protocol helpers used by both the hub and satellite sides
  * of the vscode-mcp extension. These eliminate duplicated message parsing,
  * socket replacement, and request/response correlation logic.
+ *
+ * vscode-free: depends only on 'ws'. Trace output goes to console.
  */
 
 /** Parse a raw WebSocket message into a JSON object. Returns null on parse failure. */
@@ -108,5 +109,5 @@ export function newRequestId(): string {
 
 /** Log a message with a given prefix (kept for parity with existing log calls). */
 export function logProtocol(prefix: string, message: string): void {
-    log(`[${prefix}] ${message}`);
+    console.log(`[${prefix}] ${message}`);
 }
