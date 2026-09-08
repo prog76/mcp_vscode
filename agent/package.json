@@ -4,10 +4,10 @@
   "description": "Standalone hub/satellite agent sharing the vscode-mcp extension protocol and tool schema",
   "version": "0.1.0",
   "private": true,
-  "main": "out/main.js",
+  "main": "out/agent/src/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node out/main.js"
+    "start": "node out/agent/src/main.js"
   },
   "dependencies": {
     "node-pty": "^1.1.0",
