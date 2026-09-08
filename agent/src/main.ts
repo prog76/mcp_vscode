@@ -1,3 +1,17 @@
+// Runtime module alias: map @vscode-mcp/shared/* to the compiled shared tree
+// (tsconfig paths only affect type resolution, not node's runtime require).
+try {
+    const path = require('path');
+    const Module = require('module');
+    const origResolve = Module._resolveFilename;
+    Module._resolveFilename = function (request: string, ...args: any[]): string {
+        if (request.startsWith('@vscode-mcp/shared/')) {
+            request = path.join(__dirname, '../../shared/src', request.slice('@vscode-mcp/shared/'.length));
+        }
+        return origResolve.call(this, request, ...args);
+    };
+} catch { /* noop */ }
+
 import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
@@ -77,7 +91,7 @@ function parseArgs(argv: string[]): CliOptions {
             case '--wait-timeout-ms': opts.overrides.terminalWaitTimeoutMs = parseInt(next(), 10); break;
             case '--satellite-timeout-ms': opts.overrides.satelliteTimeoutMs = parseInt(next(), 10); break;
             case '--max-output-bytes': opts.overrides.maxOutputBytes = parseInt(next(), 10); break;
-            case '--version': console.log(require('../package.json').version); process.exit(0); break;
+            case '--version': console.log(require('../../../package.json').version); process.exit(0); break;
             case '--help': console.log(usage()); process.exit(0); break;
             default: throw new Error(`Unknown option: ${a}\n\n${usage()}`);
         }
@@ -123,7 +137,7 @@ async function main(): Promise<void> {
         }
     }
 
-    const pkg = require('../package.json');
+    const pkg = require('../../../package.json');
     const agent = new ToolCore(opts.sessionId, opts.cwd, pkg.version);
 
     if (opts.hubUrl) {

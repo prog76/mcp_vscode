@@ -1,3 +1,17 @@
+// Runtime module alias: map @vscode-mcp/shared/* to the compiled shared tree
+// (tsconfig paths only affect type resolution, not node's runtime require).
+try {
+    const path = require('path');
+    const Module = require('module');
+    const origResolve = Module._resolveFilename;
+    Module._resolveFilename = function (request: string, ...args: any[]): string {
+        if (request.startsWith('@vscode-mcp/shared/')) {
+            request = path.join(__dirname, '../../shared/src', request.slice('@vscode-mcp/shared/'.length));
+        }
+        return origResolve.call(this, request, ...args);
+    };
+} catch { /* noop */ }
+
 import * as vscode from 'vscode';
 import { TerminalManager } from './terminalManager';
 import { PtyTerminalManager } from './ptyTerminalManager';
