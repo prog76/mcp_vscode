@@ -6,3 +6,8 @@ out
 *.log
 shared/tsconfig.tsbuildinfo
 shared/out/
+
+# npm git-dep installs pack via files+gitignore intersection; re-include built agent
+!agent/out/**
+!agent/package.json
+!scripts/**
