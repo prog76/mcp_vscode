@@ -1,0 +1,15 @@
+{
+  "name": "vscode-mcp-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone agent for vscode-mcp (npm i -g github:prog76/mcp_vscode#vX.Y.Z)",
+  "bin": {
+    "vscode-mcp-agent": "agent/out/agent/src/main.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "prepare": "npm install --prefix shared --silent && npm install --prefix agent --silent && cd agent && npx tsc -p tsconfig.json"
+  }
+}

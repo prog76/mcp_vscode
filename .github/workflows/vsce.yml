@@ -2,6 +2,8 @@ name: Build VS Code Extension
 
 on:
   push:
+    tags:
+      - 'v*'
     branches:
       - main
       - master

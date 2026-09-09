@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Runtime module alias: map @vscode-mcp/shared/* to the compiled shared tree
 // (tsconfig paths only affect type resolution, not node's runtime require).
 try {

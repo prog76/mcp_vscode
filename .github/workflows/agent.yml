@@ -2,6 +2,8 @@ name: Build Standalone Agent
 
 on:
   push:
+    tags:
+      - 'v*'
     branches:
       - main
       - master
