@@ -11,5 +11,12 @@
   },
   "scripts": {
     "prepare": "bash scripts/prepare.sh"
-  }
+  },
+  "files": [
+    "agent/out",
+    "agent/node_modules",
+    "agent/package.json",
+    "shared",
+    "scripts"
+  ]
 }
