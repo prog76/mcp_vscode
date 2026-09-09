@@ -4,3 +4,5 @@ out
 *.js.map
 *.vsix
 *.log
+shared/tsconfig.tsbuildinfo
+shared/out/
