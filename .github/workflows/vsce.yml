@@ -2,11 +2,14 @@ name: Build VS Code Extension
 
 on:
   push:
+    tags:
+      - 'v*'
     branches:
       - main
       - master
     paths:
       - 'extension/**'
+      - 'shared/**'
       - '.github/workflows/vsce.yml'
   pull_request:
     branches:
@@ -14,6 +17,7 @@ on:
       - master
     paths:
       - 'extension/**'
+      - 'shared/**'
   release:
     types: [published]
 
@@ -36,6 +40,10 @@ jobs:
 
       - name: Install dependencies
         working-directory: ./extension
+        run: npm install
+
+      - name: Install shared dependencies
+        working-directory: ./shared
         run: npm install
 
       - name: Compile TypeScript

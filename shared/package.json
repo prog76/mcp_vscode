@@ -1,0 +1,10 @@
+{
+  "name": "@vscode-mcp/shared",
+  "private": true,
+  "dependencies": {
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.10"
+  }
+}

@@ -1,0 +1,91 @@
+name: Build Standalone Agent
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+      - master
+      - standalone-agent
+    paths:
+      - 'agent/**'
+      - 'shared/**'
+      - '.github/workflows/agent.yml'
+  pull_request:
+    branches:
+      - main
+      - master
+    paths:
+      - 'agent/**'
+      - 'shared/**'
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install agent dependencies
+        working-directory: ./agent
+        run: npm install
+
+      - name: Install shared dependencies
+        working-directory: ./shared
+        run: npm install
+
+      - name: Compile agent
+        working-directory: ./agent
+        run: npx tsc -p tsconfig.json
+
+      - name: Syntax-check entrypoints
+        working-directory: ./agent
+        run: |
+          node --check out/agent/src/main.js
+          node --check out/shared/src/hubServer.js
+
+      - name: Package agent tarball
+        run: |
+          cd agent
+          tar -czf ../vscode-mcp-agent-linux-x64.tar.gz out node_modules package.json
+
+      - name: Checksum
+        run: sha256sum vscode-mcp-agent-linux-x64.tar.gz > vscode-mcp-agent-linux-x64.tar.gz.sha256
+
+      - name: Upload agent artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscode-mcp-agent-linux-x64
+          path: |
+            vscode-mcp-agent-linux-x64.tar.gz
+            vscode-mcp-agent-linux-x64.tar.gz.sha256
+          retention-days: 30
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
+    steps:
+      - name: Download agent artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vscode-mcp-agent-linux-x64
+          path: ./dist
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            ./dist/vscode-mcp-agent-linux-x64.tar.gz
+            ./dist/vscode-mcp-agent-linux-x64.tar.gz.sha256
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

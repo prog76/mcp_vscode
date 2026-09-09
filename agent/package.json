@@ -1,0 +1,21 @@
+{
+  "name": "vscode-mcp-agent",
+  "displayName": "VS Code MCP Standalone Agent",
+  "description": "Standalone hub/satellite agent sharing the vscode-mcp extension protocol and tool schema",
+  "version": "0.1.0",
+  "private": true,
+  "main": "out/agent/src/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node out/agent/src/main.js"
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.14.0",
+    "@types/ws": "^8.5.10"
+  }
+}

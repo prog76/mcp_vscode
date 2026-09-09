@@ -7,7 +7,7 @@ import { TerminalManager, CommandResult } from './terminalManager';
 import { PtyTerminalManager } from './ptyTerminalManager';
 import { CONFIG_DEFAULTS, getTerminalRunTimeoutMs, getTerminalWaitTimeoutMs, getMaxOutputBytes } from './config';
 import { log } from './logger';
-import { parseWsMessage, sendMessage, replaceSocket } from './wsProtocol';
+import { parseWsMessage, sendMessage, replaceSocket } from '@vscode-mcp/shared/wsProtocol';
 
 export interface ToolResult {
     content: Array<{ type: string; text: string }>;

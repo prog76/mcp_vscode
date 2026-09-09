@@ -1,21 +1,6 @@
-```
-# Build outputs
-extension/out/
+node_modules
+out
+*.js
+*.js.map
 *.vsix
-
-# Dependencies
-node_modules/
-
-# Logs and temp files
 *.log
-*.tmp
-
-# Environment
-.env
-.env.local
-*.env.*
-*.override.*
-# Editors
-.vscode/
-.idea/
-```

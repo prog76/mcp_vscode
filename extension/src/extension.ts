@@ -1,10 +1,25 @@
+// Runtime module alias: map @vscode-mcp/shared/* to the compiled shared tree
+// (tsconfig paths only affect type resolution, not node's runtime require).
+try {
+    const path = require('path');
+    const Module = require('module');
+    const origResolve = Module._resolveFilename;
+    Module._resolveFilename = function (request: string, ...args: any[]): string {
+        if (request.startsWith('@vscode-mcp/shared/')) {
+            request = path.join(__dirname, '../../shared/src', request.slice('@vscode-mcp/shared/'.length));
+        }
+        return origResolve.call(this, request, ...args);
+    };
+} catch { /* noop */ }
+
 import * as vscode from 'vscode';
 import { TerminalManager } from './terminalManager';
 import { PtyTerminalManager } from './ptyTerminalManager';
 import { ServerlessServer } from './serverlessServer';
-import { HubServer } from './hubServer';
+import { HubServer } from '@vscode-mcp/shared/hubServer';
 import { CONFIG_DEFAULTS, getSatelliteTimeoutMs } from './config';
 import { initLogger, log } from './logger';
+import { setTracer } from '@vscode-mcp/shared/tracer';
 
 let workspace: string;
 let statusBar: vscode.StatusBarItem;
@@ -25,6 +40,7 @@ let state: ConnectionState = 'disconnected';
 
 const outputChannel = vscode.window.createOutputChannel('VS Code MCP');
 initLogger(outputChannel);
+    setTracer((m) => log(m)); // full-power OutputChannel tracing for shared modules
 
 let host: string;
 let port: number;
