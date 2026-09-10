@@ -155,9 +155,16 @@ and any unknown mode value.
 The image carries an AI-ready CLI toolset so `execute`/`terminal_*` tools are useful in the
 container: zvec-grep (`zg`, hybrid semantic + lexical search with indexing), ripgrep (`rg`),
 ast-grep (`sg`, structural/AST search), ripsed (bulk find/replace/delete), `jq`, `git`,
-`curl`, `less`, `procps`. Human-interactive tools (`fzf`, `bat`, `fd-find`) and `repgrep`
+`curl`, `less`, `procps`, and the `docker` CLI (talks to the host daemon via the mounted
+`/var/run/docker.sock`). Human-interactive tools (`fzf`, `bat`, `fd-find`) and `repgrep`
 (`rgr`) are intentionally not installed — `zg`/`rg`/`sg`/`ripsed` cover those use cases.
-See `deploy/config/skills/agent-search-edit-tools.md` for usage from the agent's perspective.
+
+A **`zg` watcher daemon** (`zg server on`) runs automatically from the entrypoint: it keeps
+the `/workspace` index fresh as files change, so agent edits are re-indexed within seconds
+and `zg query` stays current with no manual re-indexing. It uses the fully-offline local
+embedding model `local/potion-code-16m-v2` (no API key, model cached in the `agent-state`
+volume). See `deploy/config/skills/agent-search-edit-tools.md` for usage from the agent's
+perspective.
 
 Build:
 

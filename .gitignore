@@ -3,6 +3,7 @@ out
 *.js
 *.js.map
 *.vsix
+*.tgz
 *.log
 shared/tsconfig.tsbuildinfo
 shared/out/

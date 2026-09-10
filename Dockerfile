@@ -112,13 +112,22 @@ RUN set -e; \
  && ! command -v bat >/dev/null 2>&1 && ! command -v batcat >/dev/null 2>&1 \
  && ! command -v rgr >/dev/null 2>&1
 
+# Stateful tool state (zg runtime/config/daemon) - compose mounts the\
+# named volume agent-state: here so it survives container recreation.
+ENV ZVEC_GREP_HOME=/var/lib/agent-state/zvec-grep
+# Local offline embedding model for the watcher daemon (no API key needed).
+ENV ZVEC_GREP_EMBEDDING=local/potion-code-16m-v2
+RUN mkdir -p /var/lib/agent-state/zvec-grep
 # Default cwd for terminal_create/execute (compose mounts ~/src here).
 WORKDIR /workspace
 ENV SHELL=/bin/bash
 EXPOSE 27681
 
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -fsS http://127.0.0.1:27681/health || exit 1
 
-ENTRYPOINT ["node", "/app/agent/out/agent/src/main.js"]
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["--mode", "server", "--host", "0.0.0.0"]
