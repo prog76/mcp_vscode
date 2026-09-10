@@ -131,6 +131,58 @@ Settings (all under `vscode-mcp.*`):
 - `terminalCreateWarmupMs` — warmup wait after `terminal_create`
 - `maxOutputBytes` — default max output size for `execute` (default 50000 ≈ 49 KB)
 
+## Standalone Agent — Manual Mode
+
+The standalone agent (`vscode-mcp-agent`, built from `agent/`) defaults to auto-detection
+(`--mode auto`): it probes the hub port and connects as a satellite when a hub is reachable,
+otherwise it starts its own hub. Use `--mode` to pick the role explicitly — required for
+containers/systemd where a probe (or a hub fallback) is wrong:
+
+| Mode | Meaning | Equivalent (legacy) |
+|------|---------|---------------------|
+| `auto` (default) | probe hub port → satellite if reachable, else hub | old default |
+| `server` | always act as hub (serve MCP HTTP + satellite WebSocket), never connect out | `--standalone` |
+| `client` | always connect as satellite to `--hub` (default `ws://<host>:<port>`), never start a hub | — |
+
+The same selector is honored via the `VSCODE_MCP_AGENT_MODE` env var (CLI `--mode` wins).
+Invalid combos are rejected at startup: `--mode server` + `--hub`, `--standalone` + `--mode client`,
+and any unknown mode value.
+
+## Docker Image
+
+`ghcr.io/prog76/vscode-mcp-agent` — built & pushed by
+[`.github/workflows/docker.yml`](.github/workflows/docker.yml) on every `v*` tag (`latest` on `main`).
+The image carries an AI-ready CLI toolset so `execute`/`terminal_*` tools are useful in the
+container: zvec-grep (`zg`, hybrid semantic + lexical search with indexing), ripgrep (`rg`),
+ast-grep (`sg`, structural/AST search), ripsed (bulk find/replace/delete), `jq`, `git`,
+`curl`, `less`, `procps`. Human-interactive tools (`fzf`, `bat`, `fd-find`) and `repgrep`
+(`rgr`) are intentionally not installed — `zg`/`rg`/`sg`/`ripsed` cover those use cases.
+See `deploy/config/skills/agent-search-edit-tools.md` for usage from the agent's perspective.
+
+Build:
+
+```bash
+docker build -t ghcr.io/prog76/vscode-mcp-agent:latest .
+```
+
+Run as a **server** (default cwd is `/workspace`):
+
+```bash
+docker run --rm -p 27681:27681 -v "$HOME/src:/workspace" \
+  ghcr.io/prog76/vscode-mcp-agent --mode server --host 0.0.0.0
+```
+
+Run as a **client/satellite** (dials `--hub`, no probe, no hub fallback):
+
+```bash
+docker run --rm ghcr.io/prog76/vscode-mcp-agent \
+  --mode client --hub ws://<hub-host>:27681
+```
+
+Mounting `~/src` at `/workspace` (read-write) puts every repo in the container, so the agent can
+search and edit code there. The container deliberately runs as root because the mounted `~/src`
+is owned by an arbitrary host uid — restrict with a compose `user:` override if your layout allows.
+
 ## Build
 
 ```bash

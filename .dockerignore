@@ -1,0 +1,14 @@
+.git
+.cline
+.vscode
+.devcontainer
+extension
+mock_ext.log
+setup.sh
+Makefile
+*.tgz
+*.vsix
+*.md
+**/node_modules
+**/out
+**/tsconfig.tsbuildinfo

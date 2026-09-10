@@ -23,6 +23,8 @@ import { parseWsMessage, sendMessage, replaceSocket } from '@vscode-mcp/shared/w
 import { initLoggerFile, log } from './logger';
 import { setTracer } from '@vscode-mcp/shared/tracer';
 
+type AgentMode = 'server' | 'client' | 'auto';
+
 interface CliOptions {
     sessionId: string;
     cwd: string;
@@ -30,6 +32,7 @@ interface CliOptions {
     host: string;
     port: number;
     standalone: boolean;        // hub mode, never fall back to satellite
+    mode: AgentMode;            // manual role selector (CLI --mode / env VSCODE_MCP_AGENT_MODE)
     logFile: string | null;
     shell: string | undefined;
     overrides: Record<string, number>;
@@ -47,6 +50,7 @@ function usage(): string {
         '  --cwd <dir>          Default working directory for terminals/execute (default: cwd)',
         '  --hub <ws-url>       Connect as satellite to the hub at ws://host:port',
         '  --standalone         Act as hub (serve MCP HTTP + satellite WebSocket) and never connect out',
+        '  --mode <m>           Manual mode: server | client | auto (overrides --standalone; env: VSCODE_MCP_AGENT_MODE)',
         '  --host <addr>        Hub bind address (default: ' + CONFIG_DEFAULTS.host + ')',
         '  --port <n>           Hub port (default: ' + CONFIG_DEFAULTS.port + ')',
         '  --shell <path>       Shell for terminal_create default',
@@ -57,7 +61,8 @@ function usage(): string {
         '  --version            Print version and exit',
         '  --help               This help',
         '',
-        'Default (no --hub / --standalone): auto — probe the hub port; satellite if reachable, hub otherwise.',
+        'Default (--mode auto): probe the hub port; satellite if reachable, hub otherwise.',
+        'Manual modes: --mode server = hub only; --mode client = satellite only (needs --hub, default ws://<host>:<port>).',
     ].join('\n');
 }
 
@@ -70,10 +75,22 @@ function parseArgs(argv: string[]): CliOptions {
         host: CONFIG_DEFAULTS.host,
         port: CONFIG_DEFAULTS.port,
         standalone: false,
+        mode: 'auto',
         logFile: null,
         shell: undefined,
         overrides: {},
     };
+    // Env-var fallback so containers can pick the role without CLI args.
+    const envMode = (process.env.VSCODE_MCP_AGENT_MODE || '').trim().toLowerCase();
+    if (envMode) {
+        if (envMode !== 'server' && envMode !== 'client' && envMode !== 'auto') {
+            throw new Error(`Invalid VSCODE_MCP_AGENT_MODE '${envMode}' (expected server|client|auto)`);
+        }
+        opts.mode = envMode;
+    }
+    let modeSet = false;
+    let standaloneSet = false;
+    let hubSet = false;
     for (let i = 2; i < argv.length; i++) {
         const a = argv[i];
         const next = (): string => {
@@ -83,8 +100,15 @@ function parseArgs(argv: string[]): CliOptions {
         switch (a) {
             case '--session-id': opts.sessionId = next(); break;
             case '--cwd': opts.cwd = path.resolve(next()); break;
-            case '--hub': opts.hubUrl = normalizeHubUrl(next()); break;
-            case '--standalone': opts.standalone = true; break;
+            case '--hub': opts.hubUrl = normalizeHubUrl(next()); hubSet = true; break;
+            case '--standalone': opts.standalone = true; standaloneSet = true; break;
+            case '--mode': {
+                const m = next();
+                if (m !== 'server' && m !== 'client' && m !== 'auto') throw new Error(`Invalid --mode '${m}' (expected server|client|auto)`);
+                modeSet = true;
+                opts.mode = m;
+                break;
+            }
             case '--host': opts.host = next(); break;
             case '--port': opts.port = parseInt(next(), 10); break;
             case '--shell': opts.shell = next(); break;
@@ -97,6 +121,13 @@ function parseArgs(argv: string[]): CliOptions {
             case '--help': console.log(usage()); process.exit(0); break;
             default: throw new Error(`Unknown option: ${a}\n\n${usage()}`);
         }
+    }
+    if (modeSet && standaloneSet && opts.mode !== 'server') {
+        throw new Error(`--standalone conflicts with --mode ${opts.mode}`);
+    }
+    if (standaloneSet) opts.mode = 'server';
+    if (opts.mode === 'server' && hubSet) {
+        throw new Error('--mode server cannot be combined with --hub (server mode never connects out)');
     }
     return opts;
 }
@@ -129,7 +160,15 @@ async function main(): Promise<void> {
     initLoggerFile(opts.logFile);
     setTracer((m) => log(m)); // full-power stdout+file tracing for shared modules
     setConfigOverrides(opts.overrides);
-    if (!opts.hubUrl && !opts.standalone) {
+    if (opts.hubUrl) {
+        log(`[main] client mode: connecting as satellite to ${opts.hubUrl}`);
+    } else if (opts.mode === 'server') {
+        opts.standalone = true;
+        log('[main] manual mode: server — acting as hub (no probe, no outbound connection)');
+    } else if (opts.mode === 'client') {
+        opts.hubUrl = `ws://${opts.host}:${opts.port}`;
+        log(`[main] manual mode: client — satellite to ${opts.hubUrl} (no probe, no hub fallback)`);
+    } else {
         const hubUp = await probeHub(opts.host, opts.port);
         if (hubUp) {
             opts.hubUrl = `ws://${opts.host}:${opts.port}`;
