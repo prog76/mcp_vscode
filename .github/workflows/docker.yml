@@ -46,7 +46,7 @@ jobs:
         with:
           images: ghcr.io/prog76/vscode-mcp-agent
           tags: |
-            type=semver,pattern={{version}}
+            type=semver,pattern={{raw}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
           flavor: |
