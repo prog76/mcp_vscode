@@ -125,9 +125,13 @@ EXPOSE 27681
 
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
+COPY docker-healthcheck.sh /docker-healthcheck.sh
+RUN chmod +x /docker-healthcheck.sh
 
+# Mode-aware: curl local /health when serving as a hub, verify the agent
+# process is alive when running as a satellite (--hub), which never listens.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:27681/health || exit 1
+  CMD /docker-healthcheck.sh
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["--mode", "server", "--host", "0.0.0.0"]

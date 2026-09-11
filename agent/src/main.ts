@@ -188,17 +188,15 @@ async function main(): Promise<void> {
         const connect = async (): Promise<void> => {
             while (!stopped) {
                 try {
-                    await agent.callTool; // no-op reference to keep TS happy about agent use
-                    // connectAsSatellite resolves once registered; on hub loss it
-                    // invokes onHubLost and we retry from the top.
-                    await new Promise<void>((resolve, reject) => {
-                        const onHubLost = (): void => reject(new Error('hub lost'));
-                        (agent as any).onHubLost?.(onHubLost);
-                        // Use the extension-shaped satellite client embedded in ToolCore via composition:
-                        satelliteConnect(agent, opts.hubUrl!, onHubLost).then(resolve, reject);
-                    });
+                    await satelliteConnect(agent, opts.hubUrl!);
                     log(`[main] connected as satellite (session="${opts.sessionId}")`);
-                    return;
+                    // satelliteConnect resolves once registered, but the connection
+                    // is still live. Do NOT return — keep this loop iteration
+                    // pending until the socket actually closes (hub death /
+                    // network drop), then reconnect from the top.
+                    await waitForSatelliteDisconnect();
+                    if (stopped) return;
+                    log(`[main] hub connection lost — reconnecting`);
                 } catch (e) {
                     if (stopped) return;
                     log(`[main] satellite connect failed (${e}) — retrying in 5s`);
@@ -236,12 +234,8 @@ async function main(): Promise<void> {
 import WebSocket from 'ws';
 
 
-async function satelliteConnect(
-    agent: ToolCore,
-    wsUrl: string,
-    onHubLost: () => void
-): Promise<void> {
-    // Disconnect any previous socket without firing hubLost.
+async function satelliteConnect(agent: ToolCore, wsUrl: string): Promise<void> {
+    // Disconnect any previous socket without firing a hub-loss signal.
     (satelliteConnect as any).ws && replaceSocket((satelliteConnect as any).ws);
     await new Promise<void>((resolve, reject) => {
         const ws = new WebSocket(wsUrl);
@@ -266,11 +260,23 @@ async function satelliteConnect(
         ws.on('close', () => {
             (satelliteConnect as any).ws = null;
             if (!settled) { settled = true; reject(new Error('connection closed before register')); }
-            else onHubLost();
         });
         ws.on('error', (err) => {
             if (!settled) { settled = true; reject(err); }
         });
+    });
+}
+
+// Resolves once the current satellite WebSocket has closed (or is already gone).
+// The reconnect loop in main() awaits this so a connection that drops is always
+// followed by another connect attempt — mirroring the extension's retry loop.
+function waitForSatelliteDisconnect(): Promise<void> {
+    const ws = (satelliteConnect as any).ws as WebSocket | null;
+    if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+        return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+        ws.once('close', () => resolve());
     });
 }
 
