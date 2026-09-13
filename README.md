@@ -184,6 +184,32 @@ Run as a **client/satellite** (dials `--hub`, no probe, no hub fallback):
 ```bash
 docker run --rm ghcr.io/prog76/vscode-mcp-agent \
   --mode client --hub ws://<hub-host>:27681
+
+### Docker Compose (deploy)
+
+Production variant used in the deploy repo (`config/docker-compose.yml`):
+
+```yaml
+vscode-mcp-agent:
+  image: ghcr.io/prog76/vscode-mcp-agent:${AGENT_VERSION}
+  container_name: mcp-vscode-agent
+  restart: unless-stopped
+  command: ["--mode", "client", "--hub", "ws://172.17.0.1:27681", "--session-id", "ligastavok"]
+  environment:
+    - ZVEC_GREP_HOME=/var/lib/agent-state/zvec-grep
+    - ZVEC_GREP_EMBEDDING=local/potion-code-16m-v2
+  volumes:
+    - ~/src:/workspace
+    - /var/run/docker.sock:/var/run/docker.sock
+    - agent-state:/var/lib/agent-state
+  networks:
+    - default
+```
+
+- **Mode/hub/session** are configured via `command:` CLI flags, NOT env vars (the only env var the agent reads is `VSCODE_MCP_AGENT_MODE`).
+- The `agent-state` named volume preserves the zg-tool state across recreation.
+- No `env_file` is needed — the agent holds no secrets.
+
 ```
 
 Mounting `~/src` at `/workspace` (read-write) puts every repo in the container, so the agent can

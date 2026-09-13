@@ -1,5 +1,6 @@
 import { TerminalInfo, CommandResult } from '@vscode-mcp/shared/types';
 import { log } from './logger';
+import { getProgressReportIntervalMs, getTimeoutRearmOnProgress, getOutputBufferLines } from './config';
 
 interface PtyTerminalInfo {
     id: string;
@@ -22,8 +23,8 @@ export class PtyTerminalManager {
     private terminals = new Map<string, PtyTerminalInfo>();
     private maxLines: number;
 
-    constructor(maxLines = 2000) {
-        this.maxLines = maxLines;
+    constructor(maxLines?: number) {
+        this.maxLines = maxLines ?? getOutputBufferLines();
     }
 
     hasTerminal(name: string): boolean {
@@ -53,15 +54,23 @@ export class PtyTerminalManager {
         const term = this.getOrCreateTerminal(terminalName);
         this.writeCommandToShell(command, term);
         const started = Date.now();
-        const deadline = started + Math.min(timeoutMs, 30000);
+        let deadline = started + timeoutMs;
         let lastLen = 0;
+        let lastOutputBytes = 0;
         let stable = 0;
+        const rearmOnProgress = getTimeoutRearmOnProgress();
+        const progressIntervalMs = getProgressReportIntervalMs();
         while (Date.now() < deadline) {
             await new Promise((r) => setTimeout(r, 200));
             const out = term.outputBuffer.join('');
             if (out.length > lastLen) {
                 lastLen = out.length;
                 stable = 0;
+                // Idle-based timeout rearm: reset deadline when output grows
+                if (rearmOnProgress && out.length > lastOutputBytes) {
+                    lastOutputBytes = out.length;
+                    deadline = Date.now() + Math.min(timeoutMs, progressIntervalMs * 2);
+                }
             } else {
                 stable++;
             }
@@ -96,15 +105,23 @@ export class PtyTerminalManager {
             throw new Error(`Terminal '${terminalName}' not found.`);
         }
         const started = Date.now();
-        const deadline = started + Math.min(timeoutMs, 30000);
+        let deadline = started + timeoutMs;
         let lastLen = 0;
+        let lastOutputBytes = 0;
         let stable = 0;
+        const rearmOnProgress = getTimeoutRearmOnProgress();
+        const progressIntervalMs = getProgressReportIntervalMs();
         while (Date.now() < deadline) {
             await new Promise((r) => setTimeout(r, 200));
             const out = term.outputBuffer.join('');
             if (out.length > lastLen) {
                 lastLen = out.length;
                 stable = 0;
+                // Idle-based timeout rearm: reset deadline when output grows
+                if (rearmOnProgress && out.length > lastOutputBytes) {
+                    lastOutputBytes = out.length;
+                    deadline = Date.now() + Math.min(timeoutMs, progressIntervalMs * 2);
+                }
             } else {
                 stable++;
             }

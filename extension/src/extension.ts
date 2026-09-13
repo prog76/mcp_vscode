@@ -62,7 +62,7 @@ export async function activate(context: vscode.ExtensionContext) {
   port = config.get<number>('port', CONFIG_DEFAULTS.port);
 
   terminalManager = new TerminalManager(config.get<number>('outputBufferLines', CONFIG_DEFAULTS.outputBufferLines));
-  ptyManager = new PtyTerminalManager();
+  ptyManager = new PtyTerminalManager(config.get<number>('outputBufferLines', CONFIG_DEFAULTS.outputBufferLines));
   satelliteTimeoutMs = getSatelliteTimeoutMs();
 
   // Align LEFT (priority 3000). The right side of the status bar is heavily

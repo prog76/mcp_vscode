@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { getShellReadDrainMs, getShellStartBindMs, getTerminalCreateWarmupMs } from './config';
+import { getShellReadDrainMs, getShellStartBindMs, getTerminalCreateWarmupMs, getOutputBufferLines } from './config';
 import { log } from './logger';
 
 export interface TerminalInfo {
@@ -68,10 +68,6 @@ class OutputBuffer {
             ''
         );
         const all = this.partial + cleaned;
-        if (all.length > 512 * 1024) {
-            this.partial = '';
-            return;
-        }
         const parts = all.split('\n');
         this.partial = parts.pop() ?? '';
         for (const line of parts) {

@@ -28,3 +28,15 @@ export function getTerminalCreateWarmupMs(): number {
 export function getMaxOutputBytes(): number {
     return mcpConfig().get<number>('maxOutputBytes', CONFIG_DEFAULTS.maxOutputBytes);
 }
+export function getOutputBufferLines(): number {
+    return mcpConfig().get<number>('outputBufferLines', CONFIG_DEFAULTS.outputBufferLines);
+}
+export function getMaxOutputBytesAction(): 'kill' | 'stop-capturing' {
+    return mcpConfig().get<'kill' | 'stop-capturing'>('maxOutputBytesAction', CONFIG_DEFAULTS.maxOutputBytesAction);
+}
+export function getProgressReportIntervalMs(): number {
+    return mcpConfig().get<number>('progressReportIntervalMs', CONFIG_DEFAULTS.progressReportIntervalMs);
+}
+export function getTimeoutRearmOnProgress(): boolean {
+    return mcpConfig().get<boolean>('timeoutRearmOnProgress', CONFIG_DEFAULTS.timeoutRearmOnProgress);
+}

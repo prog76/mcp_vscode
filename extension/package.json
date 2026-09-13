@@ -167,6 +167,24 @@
           "minimum": 1024,
           "maximum": 104857600,
           "description": "Default max output size (bytes) for the execute tool. Output is truncated at this limit. Default 50000 (\u224849 KB)."
+        },
+        "vscode-mcp.maxOutputBytesAction": {
+          "type": "string",
+          "enum": ["kill", "stop-capturing"],
+          "default": "kill",
+          "description": "Action when max_output_bytes is exceeded: 'kill' (SIGTERM the process) or 'stop-capturing' (stop buffering but let the process continue). Default 'kill'."
+        },
+        "vscode-mcp.progressReportIntervalMs": {
+          "type": "number",
+          "default": 10000,
+          "minimum": 1000,
+          "maximum": 120000,
+          "description": "Interval (ms) at which progress notifications are sent during long-running tool executions. Progress notifications reset the idle timeout. Default 10000 (10s)."
+        },
+        "vscode-mcp.timeoutRearmOnProgress": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, the tool-call deadline is reset each time output progress is reported. Prevents long-running commands that produce output from being killed by the timeout. Default true."
         }
       }
     }

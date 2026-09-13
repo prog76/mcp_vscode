@@ -5,9 +5,9 @@ import { spawn, SpawnOptions } from 'child_process';
 import WebSocket from 'ws';
 import { TerminalManager, CommandResult } from './terminalManager';
 import { PtyTerminalManager } from './ptyTerminalManager';
-import { CONFIG_DEFAULTS, getTerminalRunTimeoutMs, getTerminalWaitTimeoutMs, getMaxOutputBytes } from './config';
+import { CONFIG_DEFAULTS, getTerminalRunTimeoutMs, getTerminalWaitTimeoutMs, getMaxOutputBytes, getMaxOutputBytesAction, getProgressReportIntervalMs, getTimeoutRearmOnProgress, getOutputBufferLines } from './config';
 import { log } from './logger';
-import { parseWsMessage, sendMessage, replaceSocket } from '@vscode-mcp/shared/wsProtocol';
+import { parseWsMessage, sendMessage, replaceSocket, newProgressMessage } from '@vscode-mcp/shared/wsProtocol';
 
 export interface ToolResult {
     content: Array<{ type: string; text: string }>;
@@ -568,7 +568,7 @@ export class ServerlessServer {
         switch (msg.type) {
             case 'execute':
                 log(`[satellite] execute received — tool="${msg.tool}" requestId=${msg.requestId}`);
-                this.callTool(msg.tool, msg.params || {})
+                this.callTool(msg.tool, msg.params || {}, msg.requestId)
                     .then((result) => {
                         log(`[agent] callTool resolved — tool="${msg.tool}" requestId=${msg.requestId}, sending result`);
                         sendMessage(this.ws, { type: 'result', requestId: msg.requestId, result });
@@ -623,11 +623,11 @@ export class ServerlessServer {
         this.debugOutputBuffer = [];
     }
 
-    async callTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+    async callTool(name: string, args: Record<string, unknown>, requestId?: string): Promise<ToolResult> {
         log(`[agent] callTool start: name="${name}"`);
         const started = Date.now();
         try {
-            const result = await this.invokeTool(name, args);
+            const result = await this.invokeTool(name, args, requestId);
             const raw = result.content?.[0]?.text ?? '';
             const preview = raw.replace(/\s+/g, ' ').slice(0, 160);
             log(
@@ -681,7 +681,7 @@ export class ServerlessServer {
         return [...ptyTerms, ...shellTerms];
     }
 
-    private async invokeTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+    private async invokeTool(name: string, args: Record<string, unknown>, requestId?: string): Promise<ToolResult> {
         const text = (s: string, isError = false): ToolResult => ({
             content: [{ type: 'text', text: s }],
             ...(isError ? { isError: true } : {}),
@@ -1040,7 +1040,7 @@ export class ServerlessServer {
                 const env = args.env as Record<string, string> | undefined;
                 const maxOutputBytes =
                     (args.max_output_bytes as number | undefined) ?? getMaxOutputBytes();
-                const result = await this.directExecute(command, stdin, timeoutMs, cwd, env, maxOutputBytes);
+                const result = await this.directExecute(command, stdin, timeoutMs, cwd, env, maxOutputBytes, requestId);
                 return structured(this.formatDirectResult(result), this.commandResultStructured(result));
             }
 
@@ -1532,16 +1532,23 @@ export class ServerlessServer {
         timeoutMs: number,
         cwd: string | undefined,
         env: Record<string, string> | undefined,
-        maxOutputBytes: number
+        maxOutputBytes: number,
+        requestId?: string
     ): Promise<CommandResult> {
         const resolvedCwd = cwd || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
         const resolvedEnv = { ...process.env, ...(env ?? {}) };
+        const action = getMaxOutputBytesAction();
+        const progressIntervalMs = getProgressReportIntervalMs();
+        const rearmOnProgress = getTimeoutRearmOnProgress();
 
         return new Promise<CommandResult>((resolve) => {
             let stdout = '';
             let stderr = '';
             let resolved = false;
             let truncated = false;
+            let stopCapturing = false;
+            let lastOutputBytes = 0;
+            let deadline = Date.now() + timeoutMs;
 
             const options: SpawnOptions = {
                 shell: true,
@@ -1553,17 +1560,31 @@ export class ServerlessServer {
             const child = spawn(command, [], options);
 
             const onData = (buf: Buffer) => {
-                stdout += buf.toString();
-                if (stdout.length + stderr.length > maxOutputBytes) {
+                if (!stopCapturing) {
+                    stdout += buf.toString();
+                }
+                const totalBytes = stdout.length + stderr.length;
+                if (totalBytes > maxOutputBytes && !truncated) {
                     truncated = true;
-                    child.kill('SIGTERM');
+                    if (action === 'stop-capturing') {
+                        stopCapturing = true;
+                    } else {
+                        child.kill('SIGTERM');
+                    }
                 }
             };
             const onErr = (buf: Buffer) => {
-                stderr += buf.toString();
-                if (stdout.length + stderr.length > maxOutputBytes) {
+                if (!stopCapturing) {
+                    stderr += buf.toString();
+                }
+                const totalBytes = stdout.length + stderr.length;
+                if (totalBytes > maxOutputBytes && !truncated) {
                     truncated = true;
-                    child.kill('SIGTERM');
+                    if (action === 'stop-capturing') {
+                        stopCapturing = true;
+                    } else {
+                        child.kill('SIGTERM');
+                    }
                 }
             };
 
@@ -1581,36 +1602,57 @@ export class ServerlessServer {
             }
             child.stdin?.end();
 
-            const timer = setTimeout(() => {
+            // Progress + idle-based timeout rearm: on each interval, if output
+            // bytes grew, reset the deadline and send a progress notification
+            // to the hub (which may also rearm its own deadline).
+            const progressTimer = setInterval(() => {
                 if (resolved) return;
-                log(
-                    `[execute] timeout terminal="${resolvedCwd}" command="${command.slice(0, 120)}" ` +
-                    `timeoutMs=${timeoutMs} stdoutChars=${stdout.length}`
-                );
-                // Graceful kill first, then SIGKILL after 3s as a safety net.
-                child.kill('SIGTERM');
-                setTimeout(() => {
-                    if (child.exitCode === null) {
-                        child.kill('SIGKILL');
+                const totalBytes = stdout.length + stderr.length;
+                if (rearmOnProgress && totalBytes > lastOutputBytes) {
+                    lastOutputBytes = totalBytes;
+                    deadline = Date.now() + timeoutMs;
+                    if (requestId && this.ws) {
+                        sendMessage(this.ws, newProgressMessage(requestId, totalBytes));
                     }
-                }, 3000);
-                resolved = true;
-                clearTimeout(timer);
-                resolve({
-                    output: stdout || '(no output)',
-                    exitCode: undefined,
-                    timedOut: true,
-                    stderr,
-                    timeoutMs,
-                    truncated,
-                    maxOutputBytes,
-                });
-            }, timeoutMs);
+                }
+            }, progressIntervalMs);
+
+            const checkTimeout = () => {
+                if (resolved) return;
+                if (Date.now() >= deadline) {
+                    log(
+                        `[execute] timeout terminal="${resolvedCwd}" command="${command.slice(0, 120)}" ` +
+                        `timeoutMs=${timeoutMs} stdoutChars=${stdout.length}`
+                    );
+                    // Graceful kill first, then SIGKILL after 3s as a safety net.
+                    child.kill('SIGTERM');
+                    setTimeout(() => {
+                        if (child.exitCode === null) {
+                            child.kill('SIGKILL');
+                        }
+                    }, 3000);
+                    resolved = true;
+                    clearInterval(progressTimer);
+                    resolve({
+                        output: stdout || '(no output)',
+                        exitCode: undefined,
+                        timedOut: true,
+                        stderr,
+                        timeoutMs,
+                        truncated,
+                        maxOutputBytes,
+                    });
+                }
+            };
+
+            // Check timeout at half the interval for responsiveness
+            const timeoutChecker = setInterval(checkTimeout, Math.min(progressIntervalMs / 2, 1000));
 
             child.on('error', (err: Error) => {
                 if (resolved) return;
                 resolved = true;
-                clearTimeout(timer);
+                clearInterval(progressTimer);
+                clearInterval(timeoutChecker);
                 log(`[execute] spawn error: ${err}`);
                 resolve({
                     output: `(execute error) ${err.message}`,
@@ -1625,7 +1667,8 @@ export class ServerlessServer {
             child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
                 if (resolved) return;
                 resolved = true;
-                clearTimeout(timer);
+                clearInterval(progressTimer);
+                clearInterval(timeoutChecker);
                 log(
                     `[execute] close code=${code} signal=${signal} ` +
                     `stdoutChars=${stdout.length} stderrChars=${stderr.length}`

@@ -166,12 +166,12 @@ async function main(): Promise<void> {
         opts.standalone = true;
         log('[main] manual mode: server — acting as hub (no probe, no outbound connection)');
     } else if (opts.mode === 'client') {
-        opts.hubUrl = `ws://${opts.host}:${opts.port}`;
+        opts.hubUrl = normalizeHubUrl(`ws://${opts.host}:${opts.port}`);
         log(`[main] manual mode: client — satellite to ${opts.hubUrl} (no probe, no hub fallback)`);
     } else {
         const hubUp = await probeHub(opts.host, opts.port);
         if (hubUp) {
-            opts.hubUrl = `ws://${opts.host}:${opts.port}`;
+            opts.hubUrl = normalizeHubUrl(`ws://${opts.host}:${opts.port}`);
             log(`[main] auto mode: hub reachable at ${opts.host}:${opts.port} — connecting as satellite`);
         } else {
             opts.standalone = true;

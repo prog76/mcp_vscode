@@ -4,7 +4,7 @@ import { ToolResult, Tool, Agent } from './types';
 import { TOOLS } from './toolsSchema';
 import { CONFIG_DEFAULTS } from './config';
 import { trace } from './tracer';
-import { parseWsMessage, sendMessage, replaceSocket, RequestCorrelator, newRequestId } from './wsProtocol';
+import { parseWsMessage, sendMessage, replaceSocket, RequestCorrelator, newRequestId, newProgressMessage } from './wsProtocol';
 import { jsonrpcResult, jsonrpcError, JsonRpcErrorCode } from './mcpResponse';
 
 interface SatelliteInfo {
@@ -31,6 +31,9 @@ export class HubServer {
     private heartbeatTimer: NodeJS.Timeout | null = null;
     private eventListeners: Array<(event: HubEvent) => void> = [];
     private satelliteTimeoutMs: number;
+    private timeoutRearmOnProgress: number;
+    /** Per-requestId progress notifications received from satellites, collected for MCP meta */
+    private progressEvents = new Map<string, Array<{ bytes: number; timestamp: number }>>();
 
     constructor(
         ownAgent: Agent,
@@ -38,7 +41,8 @@ export class HubServer {
         extensionVersion: string,
         port: number,
         host: string = CONFIG_DEFAULTS.host,
-        satelliteTimeoutMs: number = CONFIG_DEFAULTS.satelliteTimeoutMs
+        satelliteTimeoutMs: number = CONFIG_DEFAULTS.satelliteTimeoutMs,
+        timeoutRearmOnProgress: number = CONFIG_DEFAULTS.terminalRunTimeoutMs
     ) {
         this.ownAgent = ownAgent;
         this.ownSessionId = ownSessionId;
@@ -46,6 +50,7 @@ export class HubServer {
         this._port = port;
         this.host = host;
         this.satelliteTimeoutMs = satelliteTimeoutMs;
+        this.timeoutRearmOnProgress = timeoutRearmOnProgress;
     }
 
     get port(): number {
@@ -170,6 +175,9 @@ export class HubServer {
                 case 'error':
                     this.handleSatelliteResult(msg);
                     break;
+                case 'progress':
+                    this.handleSatelliteProgress(msg);
+                    break;
             }
         });
 
@@ -195,9 +203,35 @@ export class HubServer {
         trace(`[hub] Satellite ${msg.type} for requestId=${msg.requestId}`);
         if (msg.type === 'error') {
             this.pendingRequests.reject(msg.requestId, new Error(msg.message || 'Satellite error'));
+            this.progressEvents.delete(msg.requestId);
         } else {
             this.pendingRequests.resolve(msg.requestId, msg.result as ToolResult);
         }
+    }
+
+    /**
+     * Handle a progress notification from a satellite: rearm the request deadline
+     * and store the progress event for inclusion in the MCP response meta.
+     */
+    private handleSatelliteProgress(msg: any): void {
+        const { requestId, bytes, timestamp } = msg;
+        if (!requestId) return;
+        trace(`[hub] Satellite progress requestId=${requestId} bytes=${bytes}`);
+        // Rearm the deadline so long-running commands that produce output aren't killed
+        if (this.timeoutRearmOnProgress > 0) {
+            this.pendingRequests.rearm(requestId, this.timeoutRearmOnProgress);
+        }
+        // Collect progress events for MCP response meta
+        const events = this.progressEvents.get(requestId) || [];
+        events.push({ bytes, timestamp: timestamp || Date.now() });
+        this.progressEvents.set(requestId, events);
+    }
+
+    /** Get and clear collected progress events for a requestId (used to populate MCP meta). */
+    getAndClearProgressEvents(requestId: string): Array<{ bytes: number; timestamp: number }> {
+        const events = this.progressEvents.get(requestId) || [];
+        this.progressEvents.delete(requestId);
+        return events;
     }
 
     private handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -328,8 +362,14 @@ export class HubServer {
             trace(`[hub] Routing tool="${tool}" to satellite "${targetSession}" (requestId=${requestId})`);
             try {
                 const result = await this.executeOnSatellite(satellite.ws, requestId, tool, args);
+                // Attach progress events collected during execution to MCP structuredContent
+                const progress = this.getAndClearProgressEvents(requestId);
+                if (progress.length > 0 && result.structuredContent) {
+                    result.structuredContent._progress = progress;
+                }
                 return jsonrpcResult(msg.id, result);
             } catch (e) {
+                this.getAndClearProgressEvents(requestId);
                 return jsonrpcError(msg.id, JsonRpcErrorCode.InternalError, String(e));
             }
         }

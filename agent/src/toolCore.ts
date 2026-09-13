@@ -8,6 +8,9 @@ import {
     getTerminalRunTimeoutMs,
     getTerminalWaitTimeoutMs,
     getMaxOutputBytes,
+    getMaxOutputBytesAction,
+    getProgressReportIntervalMs,
+    getTimeoutRearmOnProgress,
 } from './config';
 import { log } from './logger';
 
@@ -269,12 +272,18 @@ export class ToolCore {
     ): Promise<CommandResult> {
         const resolvedCwd = cwd || this.defaultCwd || process.cwd();
         const resolvedEnv = { ...process.env, ...(env ?? {}) };
+        const action = getMaxOutputBytesAction();
+        const progressIntervalMs = getProgressReportIntervalMs();
+        const rearmOnProgress = getTimeoutRearmOnProgress();
 
         return new Promise<CommandResult>((resolve) => {
             let stdout = '';
             let stderr = '';
             let resolved = false;
             let truncated = false;
+            let stopCapturing = false;
+            let lastOutputBytes = 0;
+            let deadline = Date.now() + timeoutMs;
 
             const options: SpawnOptions = {
                 shell: true,
@@ -286,17 +295,31 @@ export class ToolCore {
             const child = spawn(command, [], options);
 
             const onData = (buf: Buffer) => {
-                stdout += buf.toString();
-                if (stdout.length + stderr.length > maxOutputBytes) {
+                if (!stopCapturing) {
+                    stdout += buf.toString();
+                }
+                const totalBytes = stdout.length + stderr.length;
+                if (totalBytes > maxOutputBytes && !truncated) {
                     truncated = true;
-                    child.kill('SIGTERM');
+                    if (action === 'stop-capturing') {
+                        stopCapturing = true;
+                    } else {
+                        child.kill('SIGTERM');
+                    }
                 }
             };
             const onErr = (buf: Buffer) => {
-                stderr += buf.toString();
-                if (stdout.length + stderr.length > maxOutputBytes) {
+                if (!stopCapturing) {
+                    stderr += buf.toString();
+                }
+                const totalBytes = stdout.length + stderr.length;
+                if (totalBytes > maxOutputBytes && !truncated) {
                     truncated = true;
-                    child.kill('SIGTERM');
+                    if (action === 'stop-capturing') {
+                        stopCapturing = true;
+                    } else {
+                        child.kill('SIGTERM');
+                    }
                 }
             };
 
@@ -312,35 +335,53 @@ export class ToolCore {
             }
             child.stdin?.end();
 
-            const timer = setTimeout(() => {
+            // Progress + idle-based timeout rearm: on each interval, if output
+            // bytes grew, reset the deadline so long-running commands that produce
+            // output aren't killed by the timeout.
+            const progressTimer = setInterval(() => {
                 if (resolved) return;
-                log(
-                    `[execute] timeout cwd="${resolvedCwd}" command="${command.slice(0, 120)}" ` +
-                    `timeoutMs=${timeoutMs} stdoutChars=${stdout.length}`
-                );
-                child.kill('SIGTERM');
-                setTimeout(() => {
-                    if (child.exitCode === null) {
-                        child.kill('SIGKILL');
-                    }
-                }, 3000);
-                resolved = true;
-                clearTimeout(timer);
-                resolve({
-                    output: stdout || '(no output)',
-                    exitCode: undefined,
-                    timedOut: true,
-                    stderr,
-                    timeoutMs,
-                    truncated,
-                    maxOutputBytes,
-                });
-            }, timeoutMs);
+                const totalBytes = stdout.length + stderr.length;
+                if (rearmOnProgress && totalBytes > lastOutputBytes) {
+                    lastOutputBytes = totalBytes;
+                    deadline = Date.now() + timeoutMs;
+                }
+            }, progressIntervalMs);
+
+            const checkTimeout = () => {
+                if (resolved) return;
+                if (Date.now() >= deadline) {
+                    log(
+                        `[execute] timeout cwd="${resolvedCwd}" command="${command.slice(0, 120)}" ` +
+                        `timeoutMs=${timeoutMs} stdoutChars=${stdout.length}`
+                    );
+                    child.kill('SIGTERM');
+                    setTimeout(() => {
+                        if (child.exitCode === null) {
+                            child.kill('SIGKILL');
+                        }
+                    }, 3000);
+                    resolved = true;
+                    clearInterval(progressTimer);
+                    resolve({
+                        output: stdout || '(no output)',
+                        exitCode: undefined,
+                        timedOut: true,
+                        stderr,
+                        timeoutMs,
+                        truncated,
+                        maxOutputBytes,
+                    });
+                }
+            };
+
+            // Check timeout at half the interval for responsiveness
+            const timeoutChecker = setInterval(checkTimeout, Math.min(progressIntervalMs / 2, 1000));
 
             child.on('error', (err: Error) => {
                 if (resolved) return;
                 resolved = true;
-                clearTimeout(timer);
+                clearInterval(progressTimer);
+                clearInterval(timeoutChecker);
                 log(`[execute] spawn error: ${err}`);
                 resolve({
                     output: `(execute error) ${err.message}`,
@@ -355,7 +396,8 @@ export class ToolCore {
             child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
                 if (resolved) return;
                 resolved = true;
-                clearTimeout(timer);
+                clearInterval(progressTimer);
+                clearInterval(timeoutChecker);
                 log(
                     `[execute] close code=${code} signal=${signal} ` +
                     `stdoutChars=${stdout.length} stderrChars=${stderr.length}`

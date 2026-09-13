@@ -1,11 +1,13 @@
 import * as vscode from 'vscode';
 import { CommandResult, TerminalInfo } from './terminalManager';
+import { getProgressReportIntervalMs, getTimeoutRearmOnProgress, getOutputBufferLines } from './config';
 
 interface PtyTerminalInfo {
     id: string;
     name: string;
     terminal: vscode.Terminal;
     outputBuffer: string[];
+    maxLines: number;
     cwd: string;
     writeEmitter: vscode.EventEmitter<string>;
     closeEmitter: vscode.EventEmitter<void>;
@@ -20,8 +22,10 @@ interface PtyTerminalInfo {
 export class PtyTerminalManager {
     private terminals = new Map<string, PtyTerminalInfo>();
     private disposables: vscode.Disposable[] = [];
+    private maxLines: number;
 
-    constructor() {
+    constructor(maxLines?: number) {
+        this.maxLines = maxLines ?? getOutputBufferLines();
         this.setupListeners();
     }
 
@@ -64,15 +68,23 @@ export class PtyTerminalManager {
         const term = this.getOrCreateTerminal(terminalName);
         term.terminal.sendText(command + '\r');
         const started = Date.now();
-        const deadline = started + Math.min(timeoutMs, 30000);
+        let deadline = started + timeoutMs;
         let lastLen = 0;
+        let lastOutputBytes = 0;
         let stable = 0;
+        const rearmOnProgress = getTimeoutRearmOnProgress();
+        const progressIntervalMs = getProgressReportIntervalMs();
         while (Date.now() < deadline) {
             await new Promise((r) => setTimeout(r, 200));
             const out = term.outputBuffer.join('');
             if (out.length > lastLen) {
                 lastLen = out.length;
                 stable = 0;
+                // Idle-based timeout rearm: reset deadline when output grows
+                if (rearmOnProgress && out.length > lastOutputBytes) {
+                    lastOutputBytes = out.length;
+                    deadline = Date.now() + Math.min(timeoutMs, progressIntervalMs * 2);
+                }
             } else {
                 stable++;
             }
@@ -107,15 +119,23 @@ export class PtyTerminalManager {
             throw new Error(`Terminal '${terminalName}' not found.`);
         }
         const started = Date.now();
-        const deadline = started + Math.min(timeoutMs, 30000);
+        let deadline = started + timeoutMs;
         let lastLen = 0;
+        let lastOutputBytes = 0;
         let stable = 0;
+        const rearmOnProgress = getTimeoutRearmOnProgress();
+        const progressIntervalMs = getProgressReportIntervalMs();
         while (Date.now() < deadline) {
             await new Promise((r) => setTimeout(r, 200));
             const out = term.outputBuffer.join('');
             if (out.length > lastLen) {
                 lastLen = out.length;
                 stable = 0;
+                // Idle-based timeout rearm: reset deadline when output grows
+                if (rearmOnProgress && out.length > lastOutputBytes) {
+                    lastOutputBytes = out.length;
+                    deadline = Date.now() + Math.min(timeoutMs, progressIntervalMs * 2);
+                }
             } else {
                 stable++;
             }
@@ -189,6 +209,7 @@ export class PtyTerminalManager {
         const closeEmitter = new vscode.EventEmitter<void>();
         let inputBuffer = '';
         let termInfo: PtyTerminalInfo;
+        const maxInputBytes = 65536; // Large-paste input guard threshold
 
         const terminal = vscode.window.createTerminal({
             name: terminalName,
@@ -211,6 +232,16 @@ export class PtyTerminalManager {
                         if (command) {
                             this.writeCommandToShell(command, termInfo);
                         }
+                    } else if (inputBuffer.length > maxInputBytes) {
+                        // Large-paste guard: flush input buffer as command if it
+                        // exceeds threshold without a carriage return (e.g. pasted
+                        // text that the shell hasn't acknowledged yet).
+                        const full = inputBuffer;
+                        inputBuffer = '';
+                        const command = full.replace(/[\x00-\x1f\x7f]/g, '').trim();
+                        if (command) {
+                            this.writeCommandToShell(command, termInfo);
+                        }
                     }
                 }
             }
@@ -222,6 +253,7 @@ export class PtyTerminalManager {
             name: terminalName,
             terminal,
             outputBuffer: [],
+            maxLines: this.maxLines,
             cwd: resolvedCwd,
             writeEmitter,
             closeEmitter
@@ -243,6 +275,10 @@ export class PtyTerminalManager {
         shellProcess.onData((data: string) => {
             termInfo.outputBuffer.push(data);
             writeEmitter.fire(data);
+            // Trim buffer to maxLines to bound memory
+            if (termInfo.outputBuffer.length > this.maxLines) {
+                termInfo.outputBuffer.splice(0, termInfo.outputBuffer.length - this.maxLines);
+            }
         });
 
         this.terminals.set(id, termInfo);
