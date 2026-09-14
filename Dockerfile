@@ -68,7 +68,7 @@ ARG DOCKER_CLI_VERSION=28.3.2
 #   ast-grep  (sg)  structural/AST search & rewrite
 #   ripsed          safe bulk find-replace/delete (sed-style, agent-native JSON)
 #   docker           host docker daemon control (socket bind-mounted in compose)
-#   jq / git / curl / less / procps
+#   jq / git / curl / less / procps / openssh-client
 # Human-only interactive tools (fzf, bat, fd-find) and repgrep (rgr) are
 # deliberately NOT installed — the agent equivalents are zg / rg / sg / ripsed.
 RUN case "${TARGETARCH}" in \
@@ -77,7 +77,7 @@ RUN case "${TARGETARCH}" in \
     esac \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates curl git jq unzip ripgrep less procps \
+      ca-certificates curl git jq unzip ripgrep less procps openssh-client \
  && rm -rf /var/lib/apt/lists/* \
  && curl -fsSL "https://github.com/ast-grep/ast-grep/releases/download/${AST_GREP_VERSION}/app-${SG_ARCH}-unknown-linux-gnu.zip" -o /tmp/sg.zip \
  && unzip -q /tmp/sg.zip -d /tmp/sg \
