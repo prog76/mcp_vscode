@@ -184,25 +184,47 @@ async function main(): Promise<void> {
 
     if (opts.hubUrl) {
         // Satellite mode with reconnect, mirroring the extension's retry loop.
+        // In auto mode, when the hub connection is lost we re-probe to decide
+        // whether to remain a satellite or switch to hub mode.
         let stopped = false;
-        const connect = async (): Promise<void> => {
+        const autoMode = opts.mode === 'auto';
+        let consecutiveFailures = 0;
+        const MAX_FAILURES_BEFORE_REPROBE = 3;
+        const connect = async (): Promise<'continue' | 'switch-to-hub'> => {
             while (!stopped) {
                 try {
                     await satelliteConnect(agent, opts.hubUrl!);
                     log(`[main] connected as satellite (session="${opts.sessionId}")`);
+                    consecutiveFailures = 0;
                     // satelliteConnect resolves once registered, but the connection
                     // is still live. Do NOT return — keep this loop iteration
                     // pending until the socket actually closes (hub death /
                     // network drop), then reconnect from the top.
                     await waitForSatelliteDisconnect();
-                    if (stopped) return;
+                    if (stopped) return 'continue';
                     log(`[main] hub connection lost — reconnecting`);
                 } catch (e) {
-                    if (stopped) return;
-                    log(`[main] satellite connect failed (${e}) — retrying in 5s`);
+                    if (stopped) return 'continue';
+                    consecutiveFailures++;
+                    log(`[main] satellite connect failed (${e}) — attempt ${consecutiveFailures}, retrying in 5s`);
+
+                    // In auto mode, after multiple consecutive failures,
+                    // re-probe the hub to decide if we should switch to hub mode
+                    if (autoMode && consecutiveFailures >= MAX_FAILURES_BEFORE_REPROBE) {
+                        log(`[main] auto mode: ${consecutiveFailures} consecutive satellite failures — re-probing hub`);
+                        const hubUp = await probeHub(opts.host, opts.port);
+                        if (!hubUp) {
+                            log(`[main] auto mode: hub no longer reachable after ${consecutiveFailures} failures — switching to hub mode`);
+                            return 'switch-to-hub';
+                        }
+                        log(`[main] auto mode: hub still reachable, remaining as satellite`);
+                        consecutiveFailures = 0;
+                    }
+
                     await new Promise((r) => setTimeout(r, 5000));
                 }
             }
+            return 'continue';
         };
         const shutdown = (): void => {
             stopped = true;
@@ -211,7 +233,31 @@ async function main(): Promise<void> {
         };
         process.on('SIGINT', shutdown);
         process.on('SIGTERM', shutdown);
-        await connect();
+
+        const action = await connect();
+        if (action === 'switch-to-hub') {
+            // Hub is gone — switch to hub mode. Need to restart the agent process
+            // in hub mode since the ToolCore and HubServer have different lifetimes.
+            log('[main] auto mode: restarting as hub');
+            // Clean up the agent before restarting
+            agent.dispose();
+            // Re-exec ourselves in hub mode
+            const args = [
+                '--mode', 'server',
+                '--host', opts.host,
+                '--port', String(opts.port),
+                '--session-id', opts.sessionId,
+            ];
+            if (opts.cwd) args.push('--cwd', opts.cwd);
+            if (opts.shell) args.push('--shell', opts.shell);
+            if (opts.logFile) args.push('--log-file', opts.logFile);
+            log(`[main] auto mode: execing hub with args: ${args.join(' ')}`);
+            require('child_process').execFileSync(process.execPath, ['/app/agent/out/agent/src/main.js', ...args], {
+                stdio: 'inherit',
+                env: { ...process.env, VSCODE_MCP_AGENT_MODE: 'server' }
+            });
+            return;
+        }
         return;
     }
 
