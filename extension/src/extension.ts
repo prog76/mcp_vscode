@@ -33,6 +33,27 @@ let hubServer: HubServer | undefined;
 let healthCheckTimer: NodeJS.Timeout | null = null;
 let reconnectTimer: NodeJS.Timeout | null = null;
 let reconnectInFlight = false;
+// The original code calls retryConnection() immediately every time the hub
+// drops (onHubLost) OR a connect attempt fails, which over a lossy link
+// (e.g. VDI/SSH) produces a reconnect storm and serializes as repeated
+// "Replacing existing satellite connection" on the hub. Mitigation: share the
+// same exponential backoff that landed on the agent side -- base 2s with a
+// max of 30s, growing after each failure / drop, and only reset to the base
+// after a stable run (a long enough connected span).
+const RECONNECT_BASE_MS = 2000;
+const RECONNECT_MAX_MS = 30000;
+// Only reset the backoff after a connected span of this length -- a rapidly
+// flapping link keeps the delay growing instead of reconnecting instantly.
+const STABLE_CONNECTED_MS = 10000;
+
+// Tracks the current backoff delay between reconnect attempts. Grows on every
+// failed connection attempt AND on every hub-drop/reconnect cycle, and is
+// reset to the base only after a stable run.
+let reconnectDelayMs = RECONNECT_BASE_MS;
+
+// Last moment the satellite appeared to have a live (registered) connection.
+// Used to decide whether the drop should reset the backoff.
+let lastConnectedAtMs = 0;
 let hubLostRegistered = false;
 
 type ConnectionState = 'connecting' | 'connected' | 'disconnected';
@@ -206,16 +227,21 @@ async function retryConnection(): Promise<void> {
   reconnectInFlight = true;
   stopReconnectTimer();
   setState('connecting');
-  let delay = 1000;
   try {
     while (state === 'connecting') {
       try {
         await tryConnect();
+        // Successful connect: stamp when the connection went live so a later
+        // drop can tell a stable run (reset backoff) from a flap (keep growing).
+        lastConnectedAtMs = Date.now();
         return;
       } catch (e) {
         log(`Connection attempt failed: ${e}`);
-        await new Promise((r) => setTimeout(r, delay));
-        delay = Math.min(delay * 2, 30000);
+        // Back off before the next attempt. On a flapping link this delay
+        // grows instead of spinning immediately, avoiding hub churn
+        // ("Replacing existing satellite connection").
+        await new Promise((r) => setTimeout(r, reconnectDelayMs));
+        reconnectDelayMs = Math.min(reconnectDelayMs * 2, RECONNECT_MAX_MS);
       }
     }
   } finally {
@@ -301,8 +327,23 @@ async function connectAsSatellite(): Promise<void> {
       log('Hub lost callback triggered');
       stopHealthCheck();
       setState('connecting');
-      vscode.window.showWarningMessage('VS Code MCP: Hub lost, attempting to reconnect...');
-      retryConnection();
+      // Only reset the backoff after a stable run; a rapidly flapping link
+      // keeps the delay growing so it does not storm the hub.
+      if (lastConnectedAtMs && Date.now() - lastConnectedAtMs >= STABLE_CONNECTED_MS) {
+        reconnectDelayMs = RECONNECT_BASE_MS;
+      }
+      const delay = reconnectDelayMs;
+      reconnectDelayMs = Math.min(reconnectDelayMs * 2, RECONNECT_MAX_MS);
+      // Schedule (not immediate): the hub just saw this satellite drop, so an
+      // instant re-register would churn it with "Replacing existing satellite
+      // connection". Coalesce rapid drops onto a single pending timer.
+      stopReconnectTimer();
+      log(`Hub lost, reconnecting in ${delay}ms`);
+      vscode.window.showWarningMessage(`VS Code MCP: Hub lost, reconnecting in ${Math.round(delay / 1000)}s...`);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        void retryConnection();
+      }, delay);
     });
   }
   await agentServer.connectAsSatellite(wsUrl);
@@ -325,6 +366,9 @@ async function disconnect(): Promise<void> {
   stopHealthCheck();
   stopReconnectTimer();
   reconnectInFlight = false;
+  // Explicit disconnect: clean slate for the next (manual) connect.
+  reconnectDelayMs = RECONNECT_BASE_MS;
+  lastConnectedAtMs = 0;
   await hubServer?.stop();
   agentServer?.stop();
   hubServer = undefined;

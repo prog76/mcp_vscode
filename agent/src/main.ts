@@ -190,39 +190,58 @@ async function main(): Promise<void> {
         const autoMode = opts.mode === 'auto';
         let consecutiveFailures = 0;
         const MAX_FAILURES_BEFORE_REPROBE = 3;
+        // Exponential backoff for reconnect attempts (connection-drop and
+        // connect-failure paths). Reset to the base delay only after a stable
+        // run; a flapping link backs off harder instead of reconnecting instantly,
+        // which would churn the hub ("Replacing existing satellite connection")
+        // and never stabilise -- this is what made the satellite appear unable
+        // to connect to a standalone hub over a lossy link.
+        const RECONNECT_BASE_MS = 2000;
+        const RECONNECT_MAX_MS = 30000;
+        const STABLE_UPTIME_MS = 10000;
+        let reconnectDelayMs = RECONNECT_BASE_MS;
         const connect = async (): Promise<'continue' | 'switch-to-hub'> => {
             while (!stopped) {
+                let connectedAt = 0;
                 try {
                     await satelliteConnect(agent, opts.hubUrl!);
-                    log(`[main] connected as satellite (session="${opts.sessionId}")`);
+                    log(`[main] connected as satellite (session=\"${opts.sessionId}\")`);
                     consecutiveFailures = 0;
+                    connectedAt = Date.now();
                     // satelliteConnect resolves once registered, but the connection
-                    // is still live. Do NOT return — keep this loop iteration
-                    // pending until the socket actually closes (hub death /
-                    // network drop), then reconnect from the top.
+                    // is still live. Do NOT return -- keep this loop iteration
+                    // pending until the socket actually closes (hub death / network
+                    // drop), then back off and reconnect.
                     await waitForSatelliteDisconnect();
                     if (stopped) return 'continue';
-                    log(`[main] hub connection lost — reconnecting`);
+                    // Only reset the backoff after a stable run; a rapidly flapping
+                    // link keeps the delay growing so it does not storm the hub.
+                    if (connectedAt && Date.now() - connectedAt >= STABLE_UPTIME_MS) {
+                        reconnectDelayMs = RECONNECT_BASE_MS;
+                    }
+                    log(`[main] hub connection lost -- reconnecting in ${reconnectDelayMs}ms`);
                 } catch (e) {
                     if (stopped) return 'continue';
                     consecutiveFailures++;
-                    log(`[main] satellite connect failed (${e}) — attempt ${consecutiveFailures}, retrying in 5s`);
-
+                    log(`[main] satellite connect failed (${e}) -- attempt ${consecutiveFailures}, retrying in ${reconnectDelayMs}ms`);
                     // In auto mode, after multiple consecutive failures,
                     // re-probe the hub to decide if we should switch to hub mode
                     if (autoMode && consecutiveFailures >= MAX_FAILURES_BEFORE_REPROBE) {
-                        log(`[main] auto mode: ${consecutiveFailures} consecutive satellite failures — re-probing hub`);
+                        log(`[main] auto mode: ${consecutiveFailures} consecutive satellite failures -- re-probing hub`);
                         const hubUp = await probeHub(opts.host, opts.port);
                         if (!hubUp) {
-                            log(`[main] auto mode: hub no longer reachable after ${consecutiveFailures} failures — switching to hub mode`);
+                            log(`[main] auto mode: hub no longer reachable after ${consecutiveFailures} failures -- switching to hub mode`);
                             return 'switch-to-hub';
                         }
                         log(`[main] auto mode: hub still reachable, remaining as satellite`);
                         consecutiveFailures = 0;
                     }
-
-                    await new Promise((r) => setTimeout(r, 5000));
                 }
+                // Backoff before the next attempt on both the connection-drop and
+                // the connect-failure path, then grow the delay for the next round.
+                if (stopped) return 'continue';
+                await new Promise((r) => setTimeout(r, reconnectDelayMs));
+                reconnectDelayMs = Math.min(reconnectDelayMs * 2, RECONNECT_MAX_MS);
             }
             return 'continue';
         };
