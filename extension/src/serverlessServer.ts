@@ -39,7 +39,7 @@ export const TOOLS = [
                 shell: { type: 'string', description: 'Shell executable path/name (optional)' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['name_prefix'],
+            required: ['name_prefix', 'session_id'],
         },
     },
     {
@@ -61,6 +61,7 @@ export const TOOLS = [
             properties: {
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
+            required: ['session_id'],
         },
     },
     {
@@ -93,7 +94,7 @@ export const TOOLS = [
                 wait: { type: 'boolean', description: 'Wait for output (default: true)' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['command'],
+            required: ['command', 'session_id'],
         },
     },
     {
@@ -110,7 +111,7 @@ export const TOOLS = [
                 add_newline: { type: 'boolean', description: 'Whether to append newline (default: true)' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['text'],
+            required: ['text', 'session_id'],
         },
     },
     {
@@ -125,6 +126,7 @@ export const TOOLS = [
                 lines: { type: 'number', description: 'Number of last lines to return (optional)' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
+            required: ['session_id'],
         },
     },
     {
@@ -136,6 +138,7 @@ export const TOOLS = [
                 terminal_name: { type: 'string', description: 'Name of terminal (optional)' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
+            required: ['session_id'],
         },
     },
     {
@@ -160,6 +163,7 @@ export const TOOLS = [
                 },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
+            required: ['session_id'],
         },
     },
     {
@@ -173,6 +177,7 @@ export const TOOLS = [
                 severity: { type: 'string', enum: ['error', 'warning', 'information', 'hint'], description: 'Filter by severity (optional)' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
+            required: ['session_id'],
         },
     },
     {
@@ -185,7 +190,7 @@ export const TOOLS = [
                 uri: { type: 'string', description: 'File path or URI to get symbols for' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['uri'],
+            required: ['uri', 'session_id'],
         },
     },
     {
@@ -200,7 +205,7 @@ export const TOOLS = [
                 character: { type: 'number', description: 'Column number (0-based) of the symbol' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['uri', 'line', 'character'],
+            required: ['uri', 'line', 'character', 'session_id'],
         },
     },
     {
@@ -216,7 +221,7 @@ export const TOOLS = [
                 new_name: { type: 'string', description: 'New name for the symbol' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['uri', 'line', 'character', 'new_name'],
+            required: ['uri', 'line', 'character', 'new_name', 'session_id'],
         },
     },
     {
@@ -230,7 +235,7 @@ export const TOOLS = [
                 args: { type: 'array', description: 'Optional arguments to pass to the command', items: {} },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['command'],
+            required: ['command', 'session_id'],
         },
     },
     {
@@ -272,7 +277,7 @@ export const TOOLS = [
                 },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['command'],
+            required: ['command', 'session_id'],
         },
     },
     {
@@ -291,7 +296,7 @@ export const TOOLS = [
                 end_line: { type: 'number', description: 'End line to highlight a range, 1-based (optional)' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['file'],
+            required: ['file', 'session_id'],
         },
     },
     {
@@ -304,7 +309,7 @@ export const TOOLS = [
                 file: { type: 'string', description: 'File path to format' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['file'],
+            required: ['file', 'session_id'],
         },
     },
     {
@@ -317,7 +322,7 @@ export const TOOLS = [
                 file: { type: 'string', description: 'File path to organize imports in' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['file'],
+            required: ['file', 'session_id'],
         },
     },
     {
@@ -330,7 +335,7 @@ export const TOOLS = [
                 file: { type: 'string', description: 'File path to auto-fix' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['file'],
+            required: ['file', 'session_id'],
         },
     },
     {
@@ -341,6 +346,7 @@ export const TOOLS = [
             properties: {
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
+            required: ['session_id'],
         },
     },
     {
@@ -357,7 +363,7 @@ export const TOOLS = [
                 exclude: { type: 'string', description: 'Glob pattern for files to exclude' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['query'],
+            required: ['query', 'session_id'],
         },
     },
     {
@@ -372,7 +378,7 @@ export const TOOLS = [
                 character: { type: 'number', description: 'Column number (0-based)' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['uri', 'line', 'character'],
+            required: ['uri', 'line', 'character', 'session_id'],
         },
     },
     {
@@ -390,7 +396,7 @@ export const TOOLS = [
                 log_message: { type: 'string', description: 'Log message — makes it a logpoint (optional)' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['action'],
+            required: ['action', 'session_id'],
         },
     },
     {
@@ -404,6 +410,7 @@ export const TOOLS = [
                 config: { type: 'object', description: 'Inline debug configuration object' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
+            required: ['session_id'],
         },
     },
     {
@@ -417,6 +424,7 @@ export const TOOLS = [
                 clear_breakpoints: { type: 'boolean', description: 'Clear all breakpoints after stopping (default: false)' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
+            required: ['session_id'],
         },
     },
     {
@@ -430,6 +438,7 @@ export const TOOLS = [
                 max_depth: { type: 'number', description: 'Max variable nesting depth to expand (default: 1)' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
+            required: ['session_id'],
         },
     },
     {
@@ -446,7 +455,7 @@ export const TOOLS = [
                 context: { type: 'string', enum: ['watch', 'repl', 'hover'], description: 'Evaluation context (default: repl)' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['action'],
+            required: ['action', 'session_id'],
         },
     },
     {
@@ -460,6 +469,7 @@ export const TOOLS = [
                 clear: { type: 'boolean', description: 'Clear the buffer after reading (default: false)' },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
+            required: ['session_id'],
         },
     },
 ];
