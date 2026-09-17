@@ -2,7 +2,7 @@
   "name": "vscode-mcp-extension",
   "displayName": "VS Code MCP Extension",
   "description": "VS Code extension that exposes terminals via MCP protocol",
-  "version": "1.0.73",
+  "version": "1.0.74",
   "publisher": "prog76",
   "icon": "icon.png",
   "engines": {
@@ -166,11 +166,14 @@
           "default": 50000,
           "minimum": 1024,
           "maximum": 104857600,
-          "description": "Default max output size (bytes) for the execute tool. Output is truncated at this limit. Default 50000 (\u224849 KB)."
+          "description": "Default max output size (bytes) for the execute tool. Output is truncated at this limit. Default 50000 (≈49 KB)."
         },
         "vscode-mcp.maxOutputBytesAction": {
           "type": "string",
-          "enum": ["kill", "stop-capturing"],
+          "enum": [
+            "kill",
+            "stop-capturing"
+          ],
           "default": "kill",
           "description": "Action when max_output_bytes is exceeded: 'kill' (SIGTERM the process) or 'stop-capturing' (stop buffering but let the process continue). Default 'kill'."
         },

@@ -61,19 +61,20 @@ ARG TARGETARCH
 ARG AST_GREP_VERSION=0.45.3
 ARG ZG_VERSION=0.2.2
 ARG DOCKER_CLI_VERSION=28.3.2
+ARG COMPOSE_VERSION=5.5.1
 
 # Agent-facing toolset:
 #   ripgrep   (rg)  fast regex search
 #   zvec-grep (zg)  hybrid semantic + lexical search (index / query / server)
 #   ast-grep  (sg)  structural/AST search & rewrite
 #   ripsed          safe bulk find-replace/delete (sed-style, agent-native JSON)
-#   docker           host docker daemon control (socket bind-mounted in compose)
+#   docker + compose   host docker daemon control (socket bind-mounted in compose)
 #   jq / git / curl / less / procps / openssh-client
 # Human-only interactive tools (fzf, bat, fd-find) and repgrep (rgr) are
 # deliberately NOT installed — the agent equivalents are zg / rg / sg / ripsed.
 RUN case "${TARGETARCH}" in \
-      arm64) SG_ARCH=aarch64; DOCKER_ARCH=aarch64 ;; \
-      *)     SG_ARCH=x86_64;  DOCKER_ARCH=x86_64  ;; \
+      arm64) SG_ARCH=aarch64; DOCKER_ARCH=aarch64; COMPOSE_ARCH=aarch64 ;; \
+      *)     SG_ARCH=x86_64;  DOCKER_ARCH=x86_64;  COMPOSE_ARCH=x86_64  ;; \
     esac \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -88,6 +89,9 @@ RUN case "${TARGETARCH}" in \
  && tar -xzf /tmp/docker.tgz -C /tmp docker/docker \
  && mv /tmp/docker/docker /usr/local/bin/docker \
  && rm -rf /tmp/docker.tgz /tmp/docker \
+ && mkdir -p /usr/local/lib/docker/cli-plugins \
+ && curl -fsSL "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}" -o /usr/local/lib/docker/cli-plugins/docker-compose \
+ && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose \
  && npm install -g --no-audit --no-fund @zvec/zvec-grep@${ZG_VERSION} \
  && rm -rf /root/.npm
 
@@ -106,7 +110,8 @@ RUN set -e; \
     ast-grep --version | head -1; \
     sg --version | head -1; \
     ripsed --version | head -1; \
-    docker --version | head -1;  \
+    docker --version | head -1; \
+    docker compose version | head -1; \
     ! command -v fzf >/dev/null 2>&1 \
  && ! command -v fdfind >/dev/null 2>&1 && ! command -v fd >/dev/null 2>&1 \
  && ! command -v bat >/dev/null 2>&1 && ! command -v batcat >/dev/null 2>&1 \
