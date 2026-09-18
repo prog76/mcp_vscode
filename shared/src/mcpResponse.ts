@@ -1,7 +1,7 @@
 /**
  * Shared JSON-RPC 2.0 response helpers for the MCP HTTP endpoint.
  * Eliminates the repeated inline construction of jsonrpc result/error objects
- * in hubServer.ts.
+ * in the router facade.
  */
 
 export interface JsonRpcResponse {

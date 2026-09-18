@@ -16,14 +16,15 @@ try {
 import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
-import { ToolCore } from './toolCore';
-import { HubServer } from '@vscode-mcp/shared/hubServer';
+import { ToolCore, TOOLS } from './toolCore';
+import { runStdioServer } from './stdio';
+import { createRouter, parseConfig, RouterConfig } from 'mcp-router';
 import { CONFIG_DEFAULTS, setConfigOverrides } from './config';
 import { parseWsMessage, sendMessage, replaceSocket } from '@vscode-mcp/shared/wsProtocol';
-import { initLoggerFile, log } from './logger';
+import { initLoggerFile, log, setStdioQuiet } from './logger';
 import { setTracer } from '@vscode-mcp/shared/tracer';
 
-type AgentMode = 'server' | 'client' | 'auto';
+type AgentMode = 'server' | 'client' | 'auto' | 'stdio';
 
 interface CliOptions {
     sessionId: string;
@@ -31,16 +32,17 @@ interface CliOptions {
     hubUrl: string | null;      // ws://host:port — satellite mode when set
     host: string;
     port: number;
-    standalone: boolean;        // hub mode, never fall back to satellite
+    standalone: boolean;        // router mode, never fall back to satellite
     mode: AgentMode;            // manual role selector (CLI --mode / env VSCODE_MCP_AGENT_MODE)
     logFile: string | null;
     shell: string | undefined;
     overrides: Record<string, number>;
+    configPath: string | null;  // YAML with extra stdio backends for server mode
 }
 
 function usage(): string {
     return [
-        'vscode-mcp-agent — standalone hub/satellite agent sharing the vscode-mcp extension protocol',
+        'vscode-mcp-agent — standalone router/satellite agent sharing the vscode-mcp extension protocol',
         '',
         'Usage:',
         '  vscode-mcp-agent [options]',
@@ -48,11 +50,12 @@ function usage(): string {
         'Options:',
         '  --session-id <id>    Session identifier (default: <hostname>/<basename cwd>)',
         '  --cwd <dir>          Default working directory for terminals/execute (default: cwd)',
-        '  --hub <ws-url>       Connect as satellite to the hub at ws://host:port',
-        '  --standalone         Act as hub (serve MCP HTTP + satellite WebSocket) and never connect out',
-        '  --mode <m>           Manual mode: server | client | auto (overrides --standalone; env: VSCODE_MCP_AGENT_MODE)',
-        '  --host <addr>        Hub bind address (default: ' + CONFIG_DEFAULTS.host + ')',
-        '  --port <n>           Hub port (default: ' + CONFIG_DEFAULTS.port + ')',
+        '  --hub <ws-url>       Connect as satellite to the router/hub at ws://host:port',
+        '  --standalone         Act as the router (serve MCP HTTP + satellite WebSocket) and never connect out',
+        '  --mode <m>           Manual mode: server | client | auto | stdio (overrides --standalone; env: VSCODE_MCP_AGENT_MODE)',
+        '  --config <path>      Router YAML: extra stdio backends (git, ...) served alongside the agent tools (server mode)',
+        '  --host <addr>        Router bind address (default: ' + CONFIG_DEFAULTS.host + ')',
+        '  --port <n>           Router port (default: ' + CONFIG_DEFAULTS.port + ')',
         '  --shell <path>       Shell for terminal_create default',
         '  --log-file <path>    Also append logs to this file',
         '  --run-timeout-ms <n>   Default terminal_run/execute timeout',
@@ -61,8 +64,12 @@ function usage(): string {
         '  --version            Print version and exit',
         '  --help               This help',
         '',
-        'Default (--mode auto): probe the hub port; satellite if reachable, hub otherwise.',
-        'Manual modes: --mode server = hub only; --mode client = satellite only (needs --hub, default ws://<host>:<port>).',
+        'Modes:',
+        '  stdio   Plain MCP server over stdio — what mcp-router spawns per session (no ports).',
+        '  server  Host the embedded mcp-router: MCP facade at /mcp, satellite intake at /ws,',
+        '          own toolset as an in-process backend for this session.',
+        '  client  Satellite only: dial --hub and register this session (needs a reachable router).',
+        '  auto    Probe the port: satellite if a router answers, host one otherwise (default).',
     ].join('\n');
 }
 
@@ -79,12 +86,13 @@ function parseArgs(argv: string[]): CliOptions {
         logFile: null,
         shell: undefined,
         overrides: {},
+        configPath: null,
     };
     // Env-var fallback so containers can pick the role without CLI args.
     const envMode = (process.env.VSCODE_MCP_AGENT_MODE || '').trim().toLowerCase();
     if (envMode) {
-        if (envMode !== 'server' && envMode !== 'client' && envMode !== 'auto') {
-            throw new Error(`Invalid VSCODE_MCP_AGENT_MODE '${envMode}' (expected server|client|auto)`);
+        if (envMode !== 'server' && envMode !== 'client' && envMode !== 'auto' && envMode !== 'stdio') {
+            throw new Error(`Invalid VSCODE_MCP_AGENT_MODE '${envMode}' (expected server|client|auto|stdio)`);
         }
         opts.mode = envMode;
     }
@@ -104,11 +112,12 @@ function parseArgs(argv: string[]): CliOptions {
             case '--standalone': opts.standalone = true; standaloneSet = true; break;
             case '--mode': {
                 const m = next();
-                if (m !== 'server' && m !== 'client' && m !== 'auto') throw new Error(`Invalid --mode '${m}' (expected server|client|auto)`);
+                if (m !== 'server' && m !== 'client' && m !== 'auto' && m !== 'stdio') throw new Error(`Invalid --mode '${m}' (expected server|client|auto|stdio)`);
                 modeSet = true;
                 opts.mode = m;
                 break;
             }
+            case '--config': opts.configPath = next(); break;
             case '--host': opts.host = next(); break;
             case '--port': opts.port = parseInt(next(), 10); break;
             case '--shell': opts.shell = next(); break;
@@ -160,27 +169,39 @@ async function main(): Promise<void> {
     initLoggerFile(opts.logFile);
     setTracer((m) => log(m)); // full-power stdout+file tracing for shared modules
     setConfigOverrides(opts.overrides);
+    if (opts.mode === 'stdio') {
+        // stdio: stdout belongs to the MCP protocol from here on.
+        setStdioQuiet();
+    }
     if (opts.hubUrl) {
         log(`[main] client mode: connecting as satellite to ${opts.hubUrl}`);
     } else if (opts.mode === 'server') {
         opts.standalone = true;
-        log('[main] manual mode: server — acting as hub (no probe, no outbound connection)');
+        log('[main] manual mode: server — acting as router (no probe, no outbound connection)');
     } else if (opts.mode === 'client') {
         opts.hubUrl = normalizeHubUrl(`ws://${opts.host}:${opts.port}`);
-        log(`[main] manual mode: client — satellite to ${opts.hubUrl} (no probe, no hub fallback)`);
+        log(`[main] manual mode: client — satellite to ${opts.hubUrl} (no probe, no router fallback)`);
     } else {
         const hubUp = await probeHub(opts.host, opts.port);
         if (hubUp) {
             opts.hubUrl = normalizeHubUrl(`ws://${opts.host}:${opts.port}`);
-            log(`[main] auto mode: hub reachable at ${opts.host}:${opts.port} — connecting as satellite`);
+            log(`[main] auto mode: router reachable at ${opts.host}:${opts.port} — connecting as satellite`);
         } else {
             opts.standalone = true;
-            log(`[main] auto mode: no hub at ${opts.host}:${opts.port} — acting as hub`);
+            log(`[main] auto mode: no router at ${opts.host}:${opts.port} — acting as router`);
         }
     }
 
     const pkg = require('../../../package.json');
     const agent = new ToolCore(opts.sessionId, opts.cwd, pkg.version);
+
+    // stdio mode: a plain MCP server over stdio — what a router spawns.
+    if (opts.mode === 'stdio') {
+        process.on('SIGINT', () => { agent.dispose(); process.exit(0); });
+        process.on('SIGTERM', () => { agent.dispose(); process.exit(0); });
+        await runStdioServer(agent, `agent-${pkg.version}`);
+        return;
+    }
 
     if (opts.hubUrl) {
         // Satellite mode with reconnect, mirroring the extension's retry loop.
@@ -255,9 +276,9 @@ async function main(): Promise<void> {
 
         const action = await connect();
         if (action === 'switch-to-hub') {
-            // Hub is gone — switch to hub mode. Need to restart the agent process
-            // in hub mode since the ToolCore and HubServer have different lifetimes.
-            log('[main] auto mode: restarting as hub');
+            // Hub is gone — switch to router mode. Need to restart the agent process
+            // in server mode since the ToolCore and the router have different lifetimes.
+            log('[main] auto mode: restarting as router');
             // Clean up the agent before restarting
             agent.dispose();
             // Re-exec ourselves in hub mode
@@ -280,18 +301,40 @@ async function main(): Promise<void> {
         return;
     }
 
-    // Hub / standalone mode
-    const hub = new HubServer(agent, opts.sessionId, `agent-${pkg.version}`, opts.port, opts.host);
+    // Router / standalone mode: the embedded mcp-router replaces HubServer.
+    // MCP clients hit the facade (/mcp); this agent's own toolset is an
+    // in-process backend that IS our session; dial-in windows are the
+    // 'windows' ws backend; extra stdio upstreams (git, ...) come from
+    // --config YAML.
+    let extraBackends: import('mcp-router').BackendConfig[] = [];
+    if (opts.configPath) {
+        const text = require('fs').readFileSync(opts.configPath, 'utf8');
+        const cfg = parseConfig(text);
+        extraBackends = cfg.backends.filter((b) => b.transport === 'stdio');
+        log(`[main] config ${opts.configPath}: ${extraBackends.length} stdio backend(s): ${extraBackends.map((b) => b.name).join(', ') || 'none'}`);
+    }
+    const { router, facade } = await createRouter({
+        port: opts.port,
+        host: opts.host,
+        backends: [
+            { name: 'windows', transport: 'ws', scope: 'per-session', wsPath: '/ws' },
+            ...extraBackends,
+        ],
+    });
+    await router.addEmbeddedBackend('agent', {
+        listTools: async () => TOOLS as unknown as import('mcp-router').ToolDescriptor[],
+        callTool: async (_sessionId, name, args) =>
+            (await agent.callTool(name, args)) as unknown as import('mcp-router').ToolResult,
+    }, { sessionId: opts.sessionId });
     const shutdown = async (): Promise<void> => {
         log('[main] shutting down');
-        await hub.stop();
+        await facade.close().catch(() => undefined);
         agent.dispose();
         process.exit(0);
     };
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
-    await hub.start();
-    log(`[main] hub listening on http://${opts.host}:${opts.port}/mcp (session="${opts.sessionId}", ws at /ws)`);
+    process.on('SIGINT', () => void shutdown());
+    process.on('SIGTERM', () => void shutdown());
+    log(`[main] router listening on http://${opts.host}:${opts.port}/mcp (own session="${opts.sessionId}", ws at /ws)`);
 }
 
 // Satellite client: a thin copy of the extension's ServerlessServer WS side

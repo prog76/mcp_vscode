@@ -588,6 +588,13 @@ export class ServerlessServer {
                         sendMessage(this.ws, { type: 'error', requestId: msg.requestId, message: String(err) });
                     });
                 break;
+            case 'list_tools':
+                // Router addition to the frozen protocol: advertise the live
+                // tool catalog. A peer that ignores this request keeps working
+                // via the router's configured manifest.
+                log(`[satellite] list_tools received — requestId=${msg.requestId}`);
+                sendMessage(this.ws, { type: 'list_tools_result', requestId: msg.requestId, tools: TOOLS });
+                break;
             case 'ping':
                 sendMessage(this.ws, { type: 'pong' });
                 break;

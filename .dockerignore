@@ -7,6 +7,10 @@ mock_ext.log
 setup.sh
 Makefile
 *.tgz
+# ...except the vendored mcp-router tarball, a REQUIRED build input: the agent's
+# package.json depends on it via file:../vendor/mcp-router-<version>.tgz, which
+# resolves to /build/vendor/... in the builder stage.
+!vendor/*.tgz
 *.vsix
 *.md
 **/node_modules

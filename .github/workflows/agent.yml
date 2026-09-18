@@ -53,7 +53,8 @@ jobs:
         working-directory: ./agent
         run: |
           node --check out/agent/src/main.js
-          node --check out/shared/src/hubServer.js
+          node --check out/agent/src/stdio.js
+          node --check out/agent/src/toolCore.js
 
       - name: Package agent tarball
         run: |

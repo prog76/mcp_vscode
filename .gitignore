@@ -12,3 +12,12 @@ shared/out/
 !agent/out/**
 !agent/package.json
 !scripts/**
+
+# Vendored mcp-router tarball. prog76/mcp-router is PRIVATE, so a git dep or an
+# `npm install` from it cannot resolve in CI or in a Docker build (a workflow's
+# GITHUB_TOKEN is scoped to its own repo and cannot read another private one).
+# The router's release produces this tarball; scripts/vendor-router.sh refreshes it.
+# Docker builds must be offline-reproducible: the agent's mcp-router dependency
+# is a VENDORED tarball (vendor/mcp-router-<version>.tgz), not a git dep.
+!vendor/*.tgz
+!vendor/*.sha256

@@ -1,0 +1,46 @@
+# Default router config for the vscode-mcp-agent image.
+#
+# The agent runs `--mode server --config /app/router.yaml`, which means:
+#   * this agent's own toolset  -> embedded "agent" backend (this container's session)
+#   * remote VS Code windows    -> "windows" ws backend (they dial in at /ws)
+#   * every stdio backend here  -> spawned by the router, per session
+#
+# Only stdio backends are read from this file by `--mode server`; the ws intake
+# and the embedded agent backend are added in code, because they are not
+# spawnable processes (a window dials in, the toolset lives in this process).
+
+port: 27681
+host: 0.0.0.0
+mcpPath: /mcp
+wsPath: /ws
+
+backends:
+  # git is spawned as a child process of the router.
+  #
+  # `per-session` is the point: this server keeps its "current repository" in
+  # ITS OWN process, so a single shared instance would let two sessions clobber
+  # each other's working directory. Each session therefore gets its own
+  # git-mcp-server; tools like git_set_working_dir then only affect that
+  # session. GIT_BASE_DIR is the sandbox floor: every path a session may use has
+  # to live under the mounted workspace, so a mis-resolved path cannot touch
+  # anything outside the mount. It is NOT an initial working directory — the
+  # agent still passes `path` or calls git_set_working_dir.
+  #
+  # No `prefix`: this server already names its tools git_*, a prefix here
+  # would advertise git_git_status.
+  - name: git
+    transport: stdio
+    command: git-mcp-server
+    args: []
+    env:
+      GIT_BASE_DIR: /workspace
+      # No keys/interactive auth inside the container: git must fail fast
+      # instead of prompting for credentials on push/pull.
+      GIT_TERMINAL_PROMPT: '0'
+      MCP_TRANSPORT_TYPE: stdio
+      MCP_LOG_LEVEL: warn
+      # No GPG/SSH keys in the image: sign explicitly off instead of letting
+      # every commit try (and fail) to sign.
+      GIT_SIGN_COMMITS: 'false'
+    scope: per-session
+    lazy: true

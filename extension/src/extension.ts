@@ -15,9 +15,9 @@ try {
 import * as vscode from 'vscode';
 import { TerminalManager } from './terminalManager';
 import { PtyTerminalManager } from './ptyTerminalManager';
-import { ServerlessServer } from './serverlessServer';
-import { HubServer } from '@vscode-mcp/shared/hubServer';
-import { CONFIG_DEFAULTS, getSatelliteTimeoutMs } from './config';
+import { ServerlessServer, TOOLS } from './serverlessServer';
+import { createRouter, Router, Facade } from 'mcp-router';
+import { CONFIG_DEFAULTS, getSatelliteTimeoutMs, getTerminalRunTimeoutMs } from './config';
 import { initLogger, log } from './logger';
 import { setTracer } from '@vscode-mcp/shared/tracer';
 
@@ -29,7 +29,8 @@ let terminalEngine: 'auto' | 'force-fallback' = 'auto';
 let terminalManager: TerminalManager | undefined;
 let ptyManager: PtyTerminalManager | undefined;
 let agentServer: ServerlessServer | undefined;
-let hubServer: HubServer | undefined;
+/** The router this window hosts (embedded), when it is the hub. */
+let routerHost: { router: Router; facade: Facade } | undefined;
 let healthCheckTimer: NodeJS.Timeout | null = null;
 let reconnectTimer: NodeJS.Timeout | null = null;
 let reconnectInFlight = false;
@@ -278,43 +279,46 @@ async function tryConnect(): Promise<void> {
     return;
   }
 
-  // No hub → try to start one
+  // No router → try to host one
   try {
-    await becomeHub();
+    await becomeRouter();
     return;
   } catch (e) {
-    // Port already in use (race condition - someone else became hub first)
-    log(`Failed to become hub (${e}), trying satellite`);
+    // Port already in use (race condition - someone else became the router first)
+    log(`Failed to become router (${e}), trying satellite`);
     await connectAsSatellite();
   }
 }
 
-async function becomeHub(): Promise<void> {
+async function becomeRouter(): Promise<void> {
   if (!agentServer) return;
-  // Stop any satellite connection first so we don't reconnect to the hub we're about to become.
+  // Stop any satellite connection first so we don't reconnect to the router we're about to host.
   agentServer.stop();
   const rawVersion = vscode.extensions.getExtension('prog76.vscode-mcp-extension')?.packageJSON.version;
   const extensionVersion = typeof rawVersion === 'number' ? String(rawVersion) : (rawVersion || 'unknown');
-  hubServer = new HubServer(agentServer, workspace, extensionVersion, port, host, satelliteTimeoutMs);
-  hubServer.onEvent((event) => {
-    if (event.type === 'satellite-connected') {
-      log(`Satellite connected: ${event.sessionId} (total: ${event.satelliteCount})`);
-      vscode.window.showInformationMessage(
-        `VS Code MCP: Satellite "${event.sessionId}" connected (${event.satelliteCount} total)`
-      );
-    } else {
-      log(`Satellite disconnected: ${event.sessionId} (total: ${event.satelliteCount})`);
-      vscode.window.showInformationMessage(
-        `VS Code MCP: Satellite "${event.sessionId}" disconnected (${event.satelliteCount} remaining)`
-      );
-    }
-    updateStatusBar();
+  void extensionVersion;
+
+  // The embedded router replaces the old HubServer: same MCP facade (HTTP
+  // JSON-RPC at /mcp), same satellite WS intake (/ws, frozen protocol), plus
+  // stdio upstreams from config. The vscode toolset is an in-process backend
+  // that IS this workspace's session — exactly how the hub served its own
+  // window; dial-in windows are the 'windows' ws backend.
+  const { router, facade } = await createRouter({
+    port,
+    host,
+    callTimeoutMs: getSatelliteTimeoutMs(),
+    progressRearmMs: getTerminalRunTimeoutMs(),
+    backends: [{ name: 'windows', transport: 'ws', scope: 'per-session', wsPath: '/ws' }],
   });
-  await hubServer.start();
+  await router.addEmbeddedBackend('vscode', {
+    listTools: async () => TOOLS as unknown as import('mcp-router').ToolDescriptor[],
+    callTool: async (_sessionId, name, args) => (await agentServer!.callTool(name, args)) as unknown as import('mcp-router').ToolResult,
+  }, { sessionId: workspace });
+  routerHost = { router, facade };
   setState('connected');
-  log(`Hub listening at http://${host}:${port}`);
+  log(`Router listening at http://${host}:${port} (embedded backend session: "${workspace}")`);
   vscode.window.showInformationMessage(
-    `VS Code MCP: Hub started (session: "${workspace}") listening at http://${host}:${port}`
+    `VS Code MCP: Router started (session: "${workspace}") listening at http://${host}:${port}`
   );
 }
 
@@ -369,9 +373,10 @@ async function disconnect(): Promise<void> {
   // Explicit disconnect: clean slate for the next (manual) connect.
   reconnectDelayMs = RECONNECT_BASE_MS;
   lastConnectedAtMs = 0;
-  await hubServer?.stop();
+  const host = routerHost;
+  routerHost = undefined;
+  if (host) await host.facade.close().catch(() => undefined);
   agentServer?.stop();
-  hubServer = undefined;
   updateStatusBar();
 }
 
@@ -422,11 +427,11 @@ function updateStatusBar() {
   if (!statusBar) return;
   const config = vscode.workspace.getConfiguration('vscode-mcp');
   const showStatus = config.get<boolean>('showStatus', true);
-  log(`updateStatusBar: showStatus=${showStatus} state=${state} hub=${hubServer ? 'yes' : 'no'}`);
+  log(`updateStatusBar: showStatus=${showStatus} state=${state} router=${routerHost ? 'yes' : 'no'}`);
   if (!showStatus) { statusBar.hide(); return; }
   statusBar.show();
 
-  log(`updateStatusBar: state=${state} hub=${hubServer ? 'yes' : 'no'}`);
+  log(`updateStatusBar: state=${state} router=${routerHost ? 'yes' : 'no'}`);
 
   switch (state) {
     case 'connecting':
@@ -435,10 +440,10 @@ function updateStatusBar() {
       statusBar.tooltip = `VS Code MCP Connecting...\nSession: "${workspace}"\nClick to show status`;
       break;
     case 'connected':
-      if (hubServer) {
-        const satCount = hubServer.satelliteCount;
-        statusBar.text = satCount > 0 ? `$(plug) MCP ${satCount}` : '$(plug) MCP';
-        statusBar.tooltip = `VS Code MCP Hub — session "${workspace}" listening at http://${host}:${port}\nSatellites: ${satCount}\nEngine: ${terminalEngine}\nClick to show status`;
+      if (routerHost) {
+        const sessions = routerHost.router.sessions().filter((s) => s !== workspace).length;
+        statusBar.text = sessions > 0 ? `$(plug) MCP ${sessions}` : '$(plug) MCP';
+        statusBar.tooltip = `VS Code MCP Router — session "${workspace}" listening at http://${host}:${port}\nSatellites: ${sessions}\nEngine: ${terminalEngine}\nClick to show status`;
       } else {
         statusBar.text = '$(circle-outline) MCP';
         statusBar.tooltip = `VS Code MCP Satellite — session "${workspace}" connected to hub at ws://${host}:${port}\nEngine: ${terminalEngine}\nClick to show status`;

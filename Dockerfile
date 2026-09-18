@@ -1,12 +1,21 @@
-# vscode-mcp-agent — standalone hub/satellite agent image.
+# vscode-mcp-agent — router + standalone vscode agent + git-mcp-server.
 #
 # Built & pushed to ghcr.io/prog76/vscode-mcp-agent by .github/workflows/docker.yml
 # on every v* tag (also `latest` on main).
 #
-# Server: docker run --rm -p 27681:27681 -v "$HOME/src:/workspace" \
-#           ghcr.io/prog76/vscode-mcp-agent --mode server --host 0.0.0.0
-# Client: docker run --rm \
-#           ghcr.io/prog76/vscode-mcp-agent --mode client --hub ws://<hub>:27681
+# What runs in the container is now an mcp-router:
+#   MCP client ──HTTP /mcp──▶ router
+#                              ├─ "agent" embedded backend (this process' toolset, session = --session-id)
+#                              ├─ "git"   stdio backend (git-mcp-server, spawned per session)
+#                              └─ "windows" ws intake at /ws (remote VS Code windows dial in)
+#
+# Router:  docker run --rm -p 27681:27681 -v "$HOME/src:/workspace" \
+#            ghcr.io/prog76/vscode-mcp-agent
+#          (default CMD: --mode server --host 0.0.0.0 --config /app/router.yaml)
+# Client:  docker run --rm \
+#            ghcr.io/prog76/vscode-mcp-agent --mode client --hub ws://<router>:27681
+# Stdio:   mcp-router (or any MCP host) can also spawn the agent's toolset directly:
+#            docker run --rm -i ghcr.io/prog76/vscode-mcp-agent --mode stdio
 #
 # Ships an AI CLI toolset (zg, rg, sg, ripsed, jq, git) so the
 # terminal_create/execute tools are actually useful inside the container.
@@ -26,12 +35,14 @@ RUN apt-get update \
 WORKDIR /build
 COPY shared/ shared/
 COPY agent/ agent/
+# Required by agent/package.json: "mcp-router": "file:../vendor/mcp-router-<v>.tgz"
+COPY vendor/ vendor/
 
 RUN npm install --prefix shared --no-audit --no-fund --silent \
  && npm install --prefix agent --no-audit --no-fund --silent \
  && ./agent/node_modules/.bin/tsc -p agent/tsconfig.json \
  && node --check agent/out/agent/src/main.js \
- && node --check agent/out/shared/src/hubServer.js
+ && node --check agent/out/agent/src/stdio.js
 
 # ---------------------------------------------------------------------------
 # Toolchain stage: build ripsed (Rust stream editor) from crates.io.
@@ -54,6 +65,10 @@ RUN apt-get update \
 # Runs as root on purpose: ~/src is bind-mounted from the host and is owned by
 # an arbitrary host uid (AD user) — a fixed non-root uid could not write to it.
 # Restrict with compose `user:` overrides if your layout allows.
+#
+# `git config --system --add safe.directory '*'` below is the same trade-off:
+# text at a bind mount is owned by a foreign uid, and git refuses to work on a
+# repo it does not own. The mount IS the sandbox, so it is trusted wholesale.
 # ---------------------------------------------------------------------------
 FROM node:22-slim
 
@@ -62,6 +77,9 @@ ARG AST_GREP_VERSION=0.45.3
 ARG ZG_VERSION=0.2.2
 ARG DOCKER_CLI_VERSION=28.3.2
 ARG COMPOSE_VERSION=5.5.1
+# git MCP upstream: spawned by the router as a per-session stdio backend
+# (see deploy/router.yaml). Pinned so image builds are reproducible.
+ARG GIT_MCP_VERSION=2.15.3
 
 # Agent-facing toolset:
 #   ripgrep   (rg)  fast regex search
@@ -80,6 +98,7 @@ RUN case "${TARGETARCH}" in \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl git jq unzip ripgrep less procps openssh-client \
  && rm -rf /var/lib/apt/lists/* \
+ && git config --system --add safe.directory '*' \
  && curl -fsSL "https://github.com/ast-grep/ast-grep/releases/download/${AST_GREP_VERSION}/app-${SG_ARCH}-unknown-linux-gnu.zip" -o /tmp/sg.zip \
  && unzip -q /tmp/sg.zip -d /tmp/sg \
  && mv /tmp/sg/ast-grep /usr/local/bin/ast-grep \
@@ -92,7 +111,7 @@ RUN case "${TARGETARCH}" in \
  && mkdir -p /usr/local/lib/docker/cli-plugins \
  && curl -fsSL "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}" -o /usr/local/lib/docker/cli-plugins/docker-compose \
  && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose \
- && npm install -g --no-audit --no-fund @zvec/zvec-grep@${ZG_VERSION} \
+ && npm install -g --no-audit --no-fund @zvec/zvec-grep@${ZG_VERSION} @cyanheads/git-mcp-server@${GIT_MCP_VERSION} \
  && rm -rf /root/.npm
 
 WORKDIR /app
@@ -103,7 +122,8 @@ COPY --from=build /build/shared/node_modules ./shared/node_modules
 COPY --from=build /build/shared/package.json ./shared/package.json
 COPY --from=toolchain /root/.cargo/bin/ripsed /usr/local/bin/ripsed
 
-# Verify the agent toolset and that the human-only tools are really gone.
+# Verify the agent toolset, the git MCP upstream, and that the human-only
+# tools are really gone.
 RUN set -e; \
     rg --version | head -1; \
     zg --version | head -1; \
@@ -115,7 +135,9 @@ RUN set -e; \
     ! command -v fzf >/dev/null 2>&1 \
  && ! command -v fdfind >/dev/null 2>&1 && ! command -v fd >/dev/null 2>&1 \
  && ! command -v bat >/dev/null 2>&1 && ! command -v batcat >/dev/null 2>&1 \
- && ! command -v rgr >/dev/null 2>&1
+ && ! command -v rgr >/dev/null 2>&1 \
+ && command -v git-mcp-server >/dev/null 2>&1 \
+ && test -f "$(npm root -g)/@cyanheads/git-mcp-server/dist/index.js"
 
 # Stateful tool state (zg runtime/config/daemon) - compose mounts the\
 # named volume agent-state: here so it survives container recreation.
@@ -132,11 +154,15 @@ COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 COPY docker-healthcheck.sh /docker-healthcheck.sh
 RUN chmod +x /docker-healthcheck.sh
+# Router config: wires the git upstream as a per-session stdio backend.
+# `--mode server` adds this agent's own toolset as the embedded "agent"
+# backend and the ws intake for remote VS Code windows.
+COPY deploy/router.yaml /app/router.yaml
 
-# Mode-aware: curl local /health when serving as a hub, verify the agent
+# Mode-aware: curl local /health when serving as the router, verify the agent
 # process is alive when running as a satellite (--hub), which never listens.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD /docker-healthcheck.sh
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
-CMD ["--mode", "server", "--host", "0.0.0.0"]
+CMD ["--mode", "server", "--host", "0.0.0.0", "--config", "/app/router.yaml"]
