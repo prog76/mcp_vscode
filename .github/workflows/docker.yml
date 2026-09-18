@@ -10,8 +10,12 @@ on:
     paths:
       - 'agent/**'
       - 'shared/**'
+      - 'vendor/**'
+      - 'deploy/**'
       - 'Dockerfile'
       - '.dockerignore'
+      - 'docker-entrypoint.sh'
+      - 'docker-healthcheck.sh'
       - '.github/workflows/docker.yml'
   pull_request:
     branches:
@@ -20,8 +24,12 @@ on:
     paths:
       - 'agent/**'
       - 'shared/**'
+      - 'vendor/**'
+      - 'deploy/**'
       - 'Dockerfile'
       - '.dockerignore'
+      - 'docker-entrypoint.sh'
+      - 'docker-healthcheck.sh'
       - '.github/workflows/docker.yml'
   release:
     types: [published]

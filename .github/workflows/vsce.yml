@@ -10,6 +10,7 @@ on:
     paths:
       - 'extension/**'
       - 'shared/**'
+      - 'vendor/**'
       - '.github/workflows/vsce.yml'
   pull_request:
     branches:
@@ -18,6 +19,7 @@ on:
     paths:
       - 'extension/**'
       - 'shared/**'
+      - 'vendor/**'
   release:
     types: [published]
 
