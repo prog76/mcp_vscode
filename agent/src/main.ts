@@ -18,6 +18,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { ToolCore, TOOLS } from './toolCore';
 import { runStdioServer } from './stdio';
+import { LocalBackends } from './localBackends';
 import { createRouter, parseConfig, RouterConfig } from 'mcp-router';
 import { CONFIG_DEFAULTS, setConfigOverrides } from './config';
 import { parseWsMessage, sendMessage, replaceSocket } from '@vscode-mcp/shared/wsProtocol';
@@ -194,6 +195,11 @@ async function main(): Promise<void> {
 
     const pkg = require('../../../package.json');
     const agent = new ToolCore(opts.sessionId, opts.cwd, pkg.version);
+    // Satellite only: this container's own backends, spawned here so they see
+    // this container's mount. In server mode the router spawns the configured
+    // stdio backends itself (for its own session) — building a second set here
+    // would leave two git processes serving one container.
+    const local = opts.hubUrl ? LocalBackends.fromConfig(opts.configPath, opts.sessionId) : LocalBackends.none();
 
     // stdio mode: a plain MCP server over stdio — what a router spawns.
     if (opts.mode === 'stdio') {
@@ -225,7 +231,7 @@ async function main(): Promise<void> {
             while (!stopped) {
                 let connectedAt = 0;
                 try {
-                    await satelliteConnect(agent, opts.hubUrl!);
+                    await satelliteConnect(agent, opts.hubUrl!, local);
                     log(`[main] connected as satellite (session=\"${opts.sessionId}\")`);
                     consecutiveFailures = 0;
                     connectedAt = Date.now();
@@ -268,8 +274,10 @@ async function main(): Promise<void> {
         };
         const shutdown = (): void => {
             stopped = true;
-            agent.dispose();
-            process.exit(0);
+            void local.close().finally(() => {
+                agent.dispose();
+                process.exit(0);
+            });
         };
         process.on('SIGINT', shutdown);
         process.on('SIGTERM', shutdown);
@@ -318,7 +326,11 @@ async function main(): Promise<void> {
         host: opts.host,
         backends: [
             { name: 'windows', transport: 'ws', scope: 'per-session', wsPath: '/ws' },
-            ...extraBackends,
+            // The host's own session is served by the host's own children: mark
+            // them with ownSession so dispatch prefers them and refuses every
+            // other session, instead of falling through to the single-candidate
+            // rule (which would let a bogus session id reach this filesystem).
+            ...extraBackends.map((b) => ({ ...b, ownSession: b.ownSession ?? opts.sessionId })),
         ],
     });
     await router.addEmbeddedBackend('agent', {
@@ -342,7 +354,7 @@ async function main(): Promise<void> {
 import WebSocket from 'ws';
 
 
-async function satelliteConnect(agent: ToolCore, wsUrl: string): Promise<void> {
+async function satelliteConnect(agent: ToolCore, wsUrl: string, local: LocalBackends): Promise<void> {
     // Disconnect any previous socket without firing a hub-loss signal.
     (satelliteConnect as any).ws && replaceSocket((satelliteConnect as any).ws);
     await new Promise<void>((resolve, reject) => {
@@ -352,15 +364,32 @@ async function satelliteConnect(agent: ToolCore, wsUrl: string): Promise<void> {
         ws.on('open', () => {
             log(`[satellite] WebSocket open, sending register`);
             sendMessage(ws, { type: 'register', sessionId: (agent as any).sessionId });
+            // Advertise this container's catalog: the router serves one global
+            // tool list, so a session that stayed silent would leave it
+            // incomplete (and its own git_* calls would look unknown).
+            void local
+                .listTools()
+                .then((tools) => sendMessage(ws, { type: 'list_tools_result', requestId: `register-${Date.now()}`, tools }))
+                .catch((e) => log(`[satellite] catalog advertisement failed: ${String(e)}`));
             if (!settled) { settled = true; resolve(); }
         });
         ws.on('message', (data) => {
             const msg = parseWsMessage(data);
             if (!msg) return;
             if (msg.type === 'execute') {
-                agent.callTool(msg.tool, msg.params || {})
-                    .then((result) => sendMessage(ws, { type: 'result', requestId: msg.requestId, result }))
-                    .catch((err) => sendMessage(ws, { type: 'error', requestId: msg.requestId, message: String(err) }));
+                // A tool this container's local backends own runs HERE, against
+                // this container's mount. Everything else is the agent toolset.
+                const run = local.owns(msg.tool)
+                    ? local.callTool(msg.tool, msg.params || {})
+                    : agent.callTool(msg.tool, msg.params || {});
+                run.then((result) => sendMessage(ws, { type: 'result', requestId: msg.requestId, result })).catch((err) =>
+                    sendMessage(ws, { type: 'error', requestId: msg.requestId, message: String(err) }),
+                );
+            } else if (msg.type === 'list_tools') {
+                local
+                    .listTools()
+                    .then((tools) => sendMessage(ws, { type: 'list_tools_result', requestId: msg.requestId, tools }))
+                    .catch((e) => sendMessage(ws, { type: 'error', requestId: msg.requestId, message: String(e) }));
             } else if (msg.type === 'ping') {
                 sendMessage(ws, { type: 'pong' });
             }

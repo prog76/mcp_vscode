@@ -33,8 +33,14 @@ fi
 version="$(node -p "require('$router_dir/package.json').version")"
 echo "==> packing mcp-router@$version"
 rm -f "$repo_root/vendor/mcp-router-"*.tgz "$repo_root/vendor/mcp-router-"*.sha256
-npm pack --pack-destination "$repo_root/vendor" --silent --prefix "$router_dir" >/dev/null
-mv "$repo_root/vendor/mcp-router-$version.tgz" "$repo_root/vendor/mcp-router-$version.tgz"
+# No --silent: a suppressed packer error leaves vendor/ empty while the
+# script continues, and the failure only surfaces much later as a broken
+# image build. Let it talk, then assert the artifact exists.
+npm pack --pack-destination "$repo_root/vendor" --prefix "$router_dir" >/dev/null
+if [ ! -f "$repo_root/vendor/mcp-router-$version.tgz" ]; then
+    echo "error: npm pack did not produce mcp-router-$version.tgz" >&2
+    exit 1
+fi
 ( cd "$repo_root/vendor" && sha256sum "mcp-router-$version.tgz" >"mcp-router-$version.tgz.sha256" )
 
 # Point both consumers at the new tarball.
