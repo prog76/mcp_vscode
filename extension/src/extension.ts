@@ -294,9 +294,6 @@ async function becomeRouter(): Promise<void> {
   if (!agentServer) return;
   // Stop any satellite connection first so we don't reconnect to the router we're about to host.
   agentServer.stop();
-  const rawVersion = vscode.extensions.getExtension('prog76.vscode-mcp-extension')?.packageJSON.version;
-  const extensionVersion = typeof rawVersion === 'number' ? String(rawVersion) : (rawVersion || 'unknown');
-  void extensionVersion;
 
   // The embedded router replaces the old HubServer: same MCP facade (HTTP
   // JSON-RPC at /mcp), same satellite WS intake (/ws, frozen protocol), plus
