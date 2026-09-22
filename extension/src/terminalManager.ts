@@ -16,6 +16,12 @@ export interface CommandResult {
     timedOut: boolean;
     /** stderr output (only populated by direct execute, not terminal-based runs) */
     stderr?: string;
+    /** Lines captured from stdout (argv execute reports sizes so callers need not re-read) */
+    outputLines?: number;
+    /** Lines omitted by max_output_lines */
+    truncatedLines?: number;
+    /** Files written by the tool on the caller behalf (stdout_file/stderr_file) */
+    written?: { path: string; bytes: number; lines: number; tail: string }[];
     /** The timeout in ms that was applied (used for formatting STILL RUNNING messages) */
     timeoutMs?: number;
     /** Whether output was truncated due to exceeding max_output_bytes */

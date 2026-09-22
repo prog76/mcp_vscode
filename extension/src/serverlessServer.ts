@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { resolveAllowedBinary } from '@vscode-mcp/shared/execPolicy';
+import { WriteReport } from '@vscode-mcp/shared/types';
 import { spawn, SpawnOptions } from 'child_process';
 import WebSocket from 'ws';
 import { TerminalManager, CommandResult } from './terminalManager';
@@ -1045,19 +1047,44 @@ export class ServerlessServer {
             }
 
             case 'execute': {
-                log(`[agent] execute: command="${args.command}" session="${this.sessionId}"`);
-                const command = args.command as string;
-                if (!command) {
-                    throw new Error("Parameter 'command' is required for execute.");
+                const binary = args.binary as string | undefined;
+                // `command` (shell form) is rejected, not ignored: the shell re-parsed
+                // the payload, which is where the quoting/joining/chaining failures came
+                // from. See the agent's toolCore for the same contract.
+                if (args.command !== undefined) {
+                    throw new Error(
+                        "Parameter 'command' is no longer accepted for execute. Use " +
+                        "'binary' + 'args' (no shell): cwd/env replace cd/export, " +
+                        "stdout_file/stderr_file replace redirection, max_output_lines " +
+                        "replaces piping through head/tail, and chaining is done with " +
+                        "separate calls."
+                    );
                 }
-                const stdin = args.stdin as string | undefined;
-                const cwd = args.cwd as string | undefined;
+                if (!binary) {
+                    throw new Error("Parameter 'binary' is required for execute.");
+                }
+                const resolved = resolveAllowedBinary(binary);
+                const argv = (args.args as string[] | undefined) ?? [];
+                if (!Array.isArray(argv) || argv.some((a) => typeof a !== 'string')) {
+                    throw new Error("Parameter 'args' must be an array of strings.");
+                }
+                log(`[agent] execute: binary="${resolved}" args=${JSON.stringify(argv)} session="${this.sessionId}"`);
                 const timeoutMs =
                     (args.timeout_ms as number | undefined) ?? getTerminalRunTimeoutMs();
-                const env = args.env as Record<string, string> | undefined;
                 const maxOutputBytes =
                     (args.max_output_bytes as number | undefined) ?? getMaxOutputBytes();
-                const result = await this.directExecute(command, stdin, timeoutMs, cwd, env, maxOutputBytes, requestId);
+                const result = await this.argvExecute(resolved, argv, {
+                    stdin: args.stdin as string | undefined,
+                    stdinFile: args.stdin_file as string | undefined,
+                    stdoutFile: args.stdout_file as string | undefined,
+                    stderrFile: args.stderr_file as string | undefined,
+                    maxOutputLines: args.max_output_lines as number | undefined,
+                    timeoutMs,
+                    cwd: args.cwd as string | undefined,
+                    env: args.env as Record<string, string> | undefined,
+                    maxOutputBytes,
+                    requestId,
+                });
                 return structured(this.formatDirectResult(result), this.commandResultStructured(result));
             }
 
@@ -1543,6 +1570,200 @@ export class ServerlessServer {
      * exit code are captured via pipes. If `stdin` is provided it is piped to
      * the child's stdin and the stream is closed so the process can read EOF.
      */
+    /**
+     * Execute an allowlisted binary with argv. No shell: the payload never becomes
+     * a string something re-parses, which is what removed the quoting/joining/
+     * chaining failure class (bare & forking a chain, heredoc mangling).
+     */
+    private async argvExecute(
+        binary: string,
+        argv: string[],
+        opts: {
+            stdin?: string;
+            stdinFile?: string;
+            stdoutFile?: string;
+            stderrFile?: string;
+            maxOutputLines?: number;
+            timeoutMs: number;
+            cwd?: string;
+            env?: Record<string, string>;
+            maxOutputBytes: number;
+            requestId?: string;
+        }
+    ): Promise<CommandResult> {
+        const resolvedCwd =
+            opts.cwd || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
+        const resolvedEnv = { ...process.env, ...(opts.env ?? {}) };
+        const action = getMaxOutputBytesAction();
+        const progressIntervalMs = getProgressReportIntervalMs();
+        const rearmOnProgress = getTimeoutRearmOnProgress();
+
+        let stdinPayload = opts.stdin;
+        if (opts.stdinFile !== undefined) {
+            stdinPayload = fs.readFileSync(opts.stdinFile, 'utf8');
+        }
+
+        const report = (p: string, body: string): WriteReport => ({
+            path: p,
+            bytes: Buffer.byteLength(body, 'utf8'),
+            lines: body.length ? body.split('\n').length : 0,
+            tail: body.split('\n').slice(-10).join('\n'),
+        });
+
+        const limitLines = (body: string): { text: string; truncatedLines: number } => {
+            const cap = opts.maxOutputLines;
+            if (!cap || cap <= 0) {
+                return { text: body, truncatedLines: 0 };
+            }
+            const all = body.split('\n');
+            if (all.length <= cap) {
+                return { text: body, truncatedLines: 0 };
+            }
+            const headCount = Math.ceil(cap / 2);
+            const tailCount = cap - headCount;
+            const omitted = all.length - cap;
+            const head = all.slice(0, headCount);
+            const tail = tailCount > 0 ? all.slice(-tailCount) : [];
+            const joined = [...head, `[... ${omitted} lines omitted ...]`, ...tail].join('\n');
+            return { text: joined, truncatedLines: omitted };
+        };
+
+        return new Promise<CommandResult>((resolve) => {
+            let stdout = '';
+            let stderr = '';
+            let settled = false;
+            let truncated = false;
+            let stopCapturing = false;
+            let lastOutputBytes = 0;
+            let deadline = Date.now() + opts.timeoutMs;
+
+            const options: SpawnOptions = {
+                shell: false,
+                cwd: resolvedCwd,
+                env: resolvedEnv,
+                stdio: ['pipe', 'pipe', 'pipe'],
+            };
+
+            let child: any;
+            try {
+                child = spawn(binary, argv, options);
+            } catch (err: any) {
+                resolve({
+                    output: `Failed to spawn ${binary}: ${err?.message ?? err}`,
+                    exitCode: undefined,
+                    timedOut: false,
+                });
+                return;
+            }
+
+            const onChunk = (buf: Buffer, which: 'out' | 'err') => {
+                if (!stopCapturing) {
+                    if (which === 'out') {
+                        stdout += buf.toString();
+                    } else {
+                        stderr += buf.toString();
+                    }
+                }
+                if (stdout.length + stderr.length > opts.maxOutputBytes && !truncated) {
+                    truncated = true;
+                    if (action === 'stop-capturing') {
+                        stopCapturing = true;
+                    } else {
+                        child.kill('SIGTERM');
+                    }
+                }
+            };
+
+            child.stdout?.on('data', (b: Buffer) => onChunk(b, 'out'));
+            child.stderr?.on('data', (b: Buffer) => onChunk(b, 'err'));
+
+            const progressTimer = setInterval(() => {
+                if (settled) return;
+                const total = stdout.length + stderr.length;
+                if (rearmOnProgress && total > lastOutputBytes) {
+                    lastOutputBytes = total;
+                    deadline = Date.now() + opts.timeoutMs;
+                }
+            }, progressIntervalMs);
+
+            const finish = (exitCode: number | undefined, timedOut: boolean) => {
+                if (settled) return;
+                settled = true;
+                clearInterval(progressTimer);
+
+                const written: WriteReport[] = [];
+                let outText = stdout;
+                let errText = stderr;
+
+                if (opts.stdoutFile !== undefined) {
+                    fs.writeFileSync(opts.stdoutFile, stdout);
+                    written.push(report(opts.stdoutFile, stdout));
+                    outText = '';
+                }
+                if (opts.stderrFile !== undefined) {
+                    fs.writeFileSync(opts.stderrFile, stderr);
+                    written.push(report(opts.stderrFile, stderr));
+                    errText = '';
+                }
+
+                const limited = limitLines(outText);
+                const limitedErr = limitLines(errText);
+
+                resolve({
+                    output: limited.text === '' ? '(no output)' : limited.text,
+                    exitCode,
+                    timedOut,
+                    stderr: limitedErr.text,
+                    timeoutMs: opts.timeoutMs,
+                    truncated,
+                    maxOutputBytes: opts.maxOutputBytes,
+                    outputLines: outText.length ? outText.split('\n').length : 0,
+                    truncatedLines: limited.truncatedLines,
+                    written: written.length ? written : undefined,
+                });
+            };
+
+            if (stdinPayload !== undefined) {
+                child.stdin?.write(stdinPayload, (err: any) => {
+                    if (err) {
+                        log(`[execute] stdin write error: ${err}`);
+                    }
+                });
+            }
+            child.stdin?.end();
+
+            const checkTimeout = () => {
+                if (settled) return;
+                if (Date.now() >= deadline) {
+                    child.kill('SIGTERM');
+                    setTimeout(() => {
+                        try {
+                            child.kill('SIGKILL');
+                        } catch {
+                            /* already gone */
+                        }
+                    }, 3000);
+                    finish(undefined, true);
+                }
+            };
+            const timeoutTimer = setInterval(checkTimeout, 250);
+
+            child.on('error', (err: any) => {
+                clearInterval(timeoutTimer);
+                resolve({
+                    output: `Failed to spawn ${binary}: ${err?.message ?? err}`,
+                    exitCode: undefined,
+                    timedOut: false,
+                });
+            });
+
+            child.on('close', (code: number | null) => {
+                clearInterval(timeoutTimer);
+                finish(code === null ? undefined : code, false);
+            });
+        });
+    }
+
     private async directExecute(
         command: string,
         stdin: string | undefined,

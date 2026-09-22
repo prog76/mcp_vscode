@@ -1,6 +1,6 @@
 {
   "name": "vscode-mcp-agent",
-  "version": "1.0.86",
+  "version": "1.0.87",
   "private": true,
   "description": "Standalone agent for vscode-mcp (npm i -g github:prog76/mcp_vscode#vX.Y.Z)",
   "bin": {

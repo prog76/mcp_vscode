@@ -260,9 +260,43 @@ export const TOOLS: Tool[] = [
                         `default is vscode-mcp.maxOutputBytes (${CONFIG_DEFAULTS.maxOutputBytes}). ` +
                         'If output exceeds this, the process is killed and output is truncated.',
                 },
+                binary: {
+                    type: 'string',
+                    description:
+                        'Executable to run. Only a binary on the execution allowlist is permitted; the call ' +
+                        'is rejected otherwise. This form runs NO shell: no pipes, no redirection, no &&/;/& ' +
+                        'chaining, no globbing, no command substitution. Use cwd/env for what cd and export ' +
+                        'would do, stdout_file/stderr_file to redirect, max_output_lines to limit output, and ' +
+                        'separate calls (or ipybox_execute_code) instead of chaining.',
+                },
+                args: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Arguments passed verbatim to `binary`. No shell interpretation.',
+                },
+                stdin_file: {
+                    type: 'string',
+                    description: 'Path whose contents are piped to stdin. Alternative to `stdin`.',
+                },
+                stdout_file: {
+                    type: 'string',
+                    description:
+                        'Path receiving stdout, written by the tool (not by shell redirection). The result ' +
+                        'reports bytes/lines written plus a tail.',
+                },
+                stderr_file: {
+                    type: 'string',
+                    description: 'Path receiving stderr. Same reporting as stdout_file.',
+                },
+                max_output_lines: {
+                    type: 'number',
+                    description:
+                        'Cap on captured output LINES: head + tail with a truncation marker. Replaces ' +
+                        'piping through head/tail; the byte cap still applies.',
+                },
                 session_id: { type: 'string', description: 'Target session ID (workspace name).' },
             },
-            required: ['command', 'session_id'],
+            required: ['binary', 'session_id'],
         },
     },
     {
