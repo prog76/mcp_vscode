@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
-    "mcp-router": "file:../vendor/mcp-router-0.2.7.tgz",
+    "mcp-router": "file:../vendor/mcp-router-0.2.8.tgz",
     "node-pty": "^1.1.0",
     "ws": "^8.21.3"
   },
