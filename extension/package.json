@@ -2,7 +2,7 @@
   "name": "vscode-mcp-extension",
   "displayName": "VS Code MCP Extension",
   "description": "VS Code extension that exposes terminals via MCP protocol",
-  "version": "1.0.74",
+  "version": "1.0.75",
   "publisher": "prog76",
   "icon": "icon.png",
   "engines": {
@@ -204,7 +204,7 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "mcp-router": "file:../vendor/mcp-router-0.2.6.tgz",
+    "mcp-router": "file:../vendor/mcp-router-0.2.7.tgz",
     "node-pty": "^1.1.0",
     "ws": "^8.21.3"
   }

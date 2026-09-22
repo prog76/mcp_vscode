@@ -1,3 +1,7 @@
+# NOTE: every package required at runtime MUST be shipped in the VSIX.
+# mcp-router -> @modelcontextprotocol/sdk needs: ajv, ajv-formats,
+# fast-deep-equal, fast-uri, json-schema-traverse, require-from-string.
+# The express/debug chain needs: ms, inherits, once, wrappy. Do NOT re-add them below.
 .vscode/**
 .vscode-test/**
 src/**
@@ -24,17 +28,10 @@ node_modules/@babel/**
 node_modules/@nodelib/**
 node_modules/@jridgewell/**
 node_modules/diff/**
-node_modules/json-schema-traverse/**
-node_modules/ajv/**
-node_modules/ajv-keywords/**
-node_modules/uri-js/**
 node_modules/brace-expansion/**
 node_modules/balanced-match/**
 node_modules/minimatch/**
 node_modules/concat-map/**
-node_modules/fast-deep-equal/**
-node_modules/fast-json-stable-stringify/**
-node_modules/ms/**
 node_modules/has-flag/**
 node_modules/supports-color/**
 node_modules/color-convert/**
@@ -44,9 +41,6 @@ node_modules/argparse/**
 node_modules/js-yaml/**
 node_modules/glob/**
 node_modules/graceful-fs/**
-node_modules/inherits/**
-node_modules/once/**
-node_modules/wrappy/**
 node_modules/fs.realpath/**
 node_modules/path-is-absolute/**
 node_modules/rimraf/**
@@ -74,7 +68,6 @@ node_modules/merge2/**
 node_modules/reusify/**
 node_modules/queue-microtask/**
 node_modules/run-parallel/**
-node_modules/ms/**
 node_modules/node-pty/prebuilds/**
 node_modules/node-pty/third_party/**
 node_modules/node-pty/deps/winpty/**
