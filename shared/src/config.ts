@@ -8,7 +8,7 @@ export const CONFIG_DEFAULTS = {
     shellReadDrainMs: 500,
     shellStartBindMs: 5000,
     terminalCreateWarmupMs: 5000,
-    maxOutputBytes: 250_000,
+    maxOutputBytes: 2_097_152,
     /**
      * Action when max_output_bytes is exceeded during execute / terminal_run:
      * - "kill": SIGTERM the process (current default behavior)
