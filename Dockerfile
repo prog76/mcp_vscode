@@ -113,6 +113,8 @@ RUN case "${TARGETARCH}" in \
  && curl -fsSL "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}" -o /usr/local/lib/docker/cli-plugins/docker-compose \
  && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose \
  && npm install -g --no-audit --no-fund @zvec/zvec-grep@${ZG_VERSION} @cyanheads/git-mcp-server@${GIT_MCP_VERSION} \
+ && ZG_DEPS="$(npm root -g)/@zvec/zvec-grep/node_modules" \
+ && rm -rf "$ZG_DEPS/@node-llama-cpp/linux-x64-cuda" "$ZG_DEPS/@node-llama-cpp/linux-x64-cuda-ext" "$ZG_DEPS/@node-llama-cpp/linux-x64-vulkan" "$ZG_DEPS/@node-llama-cpp/linux-arm64" "$ZG_DEPS/@node-llama-cpp/linux-armv7l" "$ZG_DEPS/onnxruntime-web" \
  && rm -rf /root/.npm
 
 WORKDIR /app
