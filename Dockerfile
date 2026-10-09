@@ -1,3 +1,4 @@
+ARG NODE_SLIM_BASE=node:22-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
 # vscode-mcp-agent — router + standalone vscode agent + git-mcp-server.
 #
 # Built & pushed to ghcr.io/prog76/vscode-mcp-agent by .github/workflows/docker.yml
@@ -25,7 +26,7 @@
 # Mirrors scripts/prepare.sh (nested npm installs need a clean env, which a
 # pristine build container already provides).
 # ---------------------------------------------------------------------------
-FROM node:22-slim AS build
+FROM ${NODE_SLIM_BASE} AS build
 
 # node-pty builds a native module -> needs a C toolchain and python.
 RUN apt-get update \
@@ -49,7 +50,7 @@ RUN npm install --prefix shared --no-audit --no-fund --silent \
 # Same base image as runtime -> glibc-compatible binary; only the ~3MB
 # binary is copied down, the Rust toolchain stays in this throwaway layer.
 # ---------------------------------------------------------------------------
-FROM node:22-slim AS toolchain
+FROM ${NODE_SLIM_BASE} AS toolchain
 
 ARG RIP_SED_VERSION=0.3.2
 
@@ -70,7 +71,7 @@ RUN apt-get update \
 # text at a bind mount is owned by a foreign uid, and git refuses to work on a
 # repo it does not own. The mount IS the sandbox, so it is trusted wholesale.
 # ---------------------------------------------------------------------------
-FROM node:22-slim
+FROM ${NODE_SLIM_BASE}
 
 ARG TARGETARCH
 ARG AST_GREP_VERSION=0.45.3
